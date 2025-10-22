@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>CSFX – Cierre diario</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  body{font:14px system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px}
+  header{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  button{padding:8px 12px;border:0;border-radius:6px;cursor:pointer}
+  #open{background:#09f;color:#fff}
+  #export{background:#1abc9c;color:#fff}
+  #print{background:#333;color:#fff}
+  table{border-collapse:collapse;width:100%;margin-top:12px}
+  th,td{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}
+  th{background:#f5f5f5}
+  .muted{opacity:.7}
+</style>
+</head>
+<body>
+<header>
+  <button id="open">Seleccionar carpeta (día)</button>
+  <button id="export" disabled>Descargar CSV</button>
+  <button id="print" disabled>Imprimir</button>
+  <span id="info" class="muted"></span>
+</header>
+
+<section id="summary"></section>
+<section>
+  <table id="tbl" aria-label="Órdenes">
+    <thead><tr>
+      <th>Hora</th><th>Ref</th><th>Orden</th><th>Cajero</th><th>Subtotal</th><th>Impuestos</th><th>Descuento</th><th>Total</th><th>Método(s)</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script>
+(async function(){
+  const $ = s=>document.querySelector(s);
+  const rows = [];
+  let folder=null;
+
+  function fmt(n){ return (n==null || isNaN(n)) ? '' : Number(n).toFixed(2); }
+
+  function toCSV(data){
+    const head = ['Hora','Ref','Orden','Cajero','Subtotal','Impuestos','Descuento','Total','Metodos'];
+    const lines = [head.join(',')];
+    data.forEach(r=>{
+      lines.push([
+        r.hora, r.ref, r.orden, r.cajero,
+        r.subtotal, r.tax, r.desc, r.total,
+        (r.metodos||[]).join('+')
+      ].map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(','))
+    });
+    return lines.join('\n');
+  }
+
+  function render(){
+    const tbody = $('#tbl tbody'); tbody.innerHTML='';
+    let sumSubtotal=0,sumTax=0,sumDesc=0,sumTotal=0;
+    const byMetodo=new Map(), byCajero=new Map();
+
+    rows.sort((a,b)=>a.hora.localeCompare(b.hora));
+    rows.forEach(r=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r.hora}</td><td>${r.ref}</td><td>${r.orden}</td><td>${r.cajero||''}</td>
+        <td>${fmt(r.subtotal)}</td><td>${fmt(r.tax)}</td><td>${fmt(r.desc)}</td><td><strong>${fmt(r.total)}</strong></td>
+        <td>${(r.metodos||[]).join(' + ')}</td>`;
+      tbody.appendChild(tr);
+      sumSubtotal+=Number(r.subtotal||0);
+      sumTax+=Number(r.tax||0);
+      sumDesc+=Number(r.desc||0);
+      sumTotal+=Number(r.total||0);
+      (r.metodos||['N/A']).forEach(m=>byMetodo.set(m,(byMetodo.get(m)||0)+Number(r.total||0)));
+      const cj=r.cajero||'N/D'; byCajero.set(cj,(byCajero.get(cj)||0)+Number(r.total||0));
+    });
+
+    $('#summary').innerHTML = `
+      <h3>Resumen</h3>
+      <p><strong>Órdenes:</strong> ${rows.length} &nbsp;|&nbsp;
+         <strong>Subtotal:</strong> ${fmt(sumSubtotal)} &nbsp;|&nbsp;
+         <strong>Impuestos:</strong> ${fmt(sumTax)} &nbsp;|&nbsp;
+         <strong>Descuentos:</strong> ${fmt(sumDesc)} &nbsp;|&nbsp;
+         <strong>Total:</strong> ${fmt(sumTotal)}</p>
+      <p><strong>Por método:</strong> ${
+        [...byMetodo.entries()].map(([m,v])=>`${m}: ${fmt(v)}`).join(' · ')
+      }</p>
+      <p><strong>Por cajero:</strong> ${
+        [...byCajero.entries()].map(([c,v])=>`${c}: ${fmt(v)}`).join(' · ')
+      }</p>
+    `;
+
+    $('#export').disabled = rows.length===0;
+    $('#print').disabled = rows.length===0;
+  }
+
+  async function pickFolder(){
+    if(!('showDirectoryPicker' in window)){
+      alert('Tu navegador no soporta File System Access. Usa Chrome/Edge en desktop.');
+      return;
+    }
+    try{
+      folder = await showDirectoryPicker({mode:'read'});
+      $('#info').textContent = 'Carpeta: ' + (folder.name || '(día)');
+      rows.length=0;
+
+      for await (const entry of folder.values()){
+        if(entry.kind!=='file' || !entry.name.endsWith('.json')) continue;
+        const file=await entry.getFile();
+        const txt=await file.text();
+        let o=null; try{o=JSON.parse(txt)}catch{continue}
+        const t=o.createdAtParts || {};
+        const hora = `${t.H||'??'}:${t.M||'??'}:${t.S||'??'}`;
+        const tot = o.totals || o.cart?.totals || {};
+        const pay = (o.rawResponse?.payments || o.cart?.payments || []).map(p=>p?.method || p?.title).filter(Boolean);
+        const caj = o.cart?.cashier || o.cart?.salesperson || o.salesperson || '';
+
+        rows.push({
+          hora,
+          ref: o.ref || o.key || '',
+          orden: o.orderNumber || '',
+          cajero: caj,
+          subtotal: tot.subtotal || tot.sub_total || 0,
+          tax: tot.tax || tot.iva || 0,
+          desc: tot.discount || 0,
+          total: tot.total || tot.grand_total || 0,
+          metodos: pay.length?pay:(
+            o.rawResponse?.payment_method ? [o.rawResponse.payment_method] : []
+          )
+        });
+      }
+      render();
+    }catch(e){
+      console.warn(e); folder=null;
+      $('#info').textContent = 'Sin carpeta';
+    }
+  }
+
+  $('#open').onclick = pickFolder;
+  $('#export').onclick = ()=>{
+    const csv = toCSV(rows);
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download='csfx_cierre_'+new Date().toISOString().slice(0,10)+'.csv';
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove()}, 600);
+  };
+  $('#print').onclick = ()=>window.print();
+})();
+</script>
+</body>
+</html>
