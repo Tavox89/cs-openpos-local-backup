@@ -741,7 +741,7 @@
 
   function setupUI() {
     const box = document.createElement('div');
-    box.style.cssText = 'position:fixed;right:14px;bottom:110px;z-index:2147483647;background:#111;color:#fff;font:12px system-ui;padding:10px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.25);max-width:240px';
+    box.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:2147483647;background:#111;color:#fff;font:12px system-ui;padding:10px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.25);max-width:240px';
     box.innerHTML = `
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
         <div id="csfx-dot" style="width:10px;height:10px;border-radius:50%;background:#e74c3c"></div>

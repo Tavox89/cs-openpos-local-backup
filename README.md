@@ -11,6 +11,10 @@ Respaldo local (offline/online) de órdenes de OpenPOS:
 - Se crea un respaldo `pending` previo al pago y se actualiza a `confirmed` cuando llega el `order_number`/`order_id`, reescribiendo el archivo definitivo.
 - Botón “Cambiar carpeta…” para limpiar el handle almacenado y seleccionar otra ubicación.
 - `window.CSFX_DEBUG = true` habilita logs detallados sobre permisos, IndexedDB y detección de checkouts.
+- Detección automática de la vista POS (admin, `/pos/`, `/openpos_sw`, cocina, etc.) sin depender de parámetros personalizados.
+- El modo REST se determina mediante `apply_filters('pos_enable_rest_ful', true)` para respetar la configuración de OpenPOS.
+- El badge “Respaldo local” ahora vive en la esquina inferior izquierda, lejos del panel de acciones del POS.
+- El script del POS usa *cache busting* vía `filemtime`, obligando al navegador a descargar la última versión tras cada actualización.
 
 ## Requisitos de navegador
 - File System Access está soportado en Chrome, Edge, Opera y navegadores Chromium en escritorio (HTTPS o `localhost`).
@@ -18,7 +22,7 @@ Respaldo local (offline/online) de órdenes de OpenPOS:
 
 ## Instalación y uso
 1. Copia `cs-openpos-local-backup` dentro de `wp-content/plugins/` y activa el plugin.
-2. Abre la pantalla de facturación de OpenPOS; el badge “Respaldo local” aparecerá en la esquina inferior derecha.
+2. Abre la pantalla de facturación de OpenPOS; el badge “Respaldo local” aparecerá en la esquina inferior izquierda.
 3. Pulsa **“Seleccionar carpeta…”** una sola vez, elige la carpeta raíz para tus respaldos y concede permiso.
 4. Cada venta generará un archivo `.json` en la subcarpeta del día y un registro en IndexedDB.
 

@@ -5,6 +5,9 @@
 - Detecta los endpoints `pos_action`/REST de OpenPOS y crea respaldos `pending` antes del pago
 - Actualiza el respaldo a `confirmed` cuando llega el número/ID de pedido y reescribe el archivo definitivo
 - Nuevo botón “Cambiar carpeta…” y modo debug (`window.CSFX_DEBUG = true`)
+- Determina el modo REST mediante `apply_filters('pos_enable_rest_ful', true)` y reconoce todas las variantes de la vista POS
+- El badge flotante se movió a la esquina inferior izquierda para no interferir con los controles del POS
+- Versionado automático del script principal con `filemtime` para refrescar la caché del navegador en cada despliegue
 
 ## 1.0.0 – MVP
 - Captura `openpos.cart.update`

@@ -28,10 +28,6 @@ function csfx_lb_is_pos_request() {
     return $cached = true;
   }
 
-  if (isset($_GET['openpos_base']) && $_GET['openpos_base'] !== '') {
-    return $cached = true;
-  }
-
   if ($page && strpos($page, 'openpos') !== false) {
     return $cached = true;
   }
@@ -69,33 +65,66 @@ function csfx_lb_is_pos_request() {
 }
 
 /**
+ * Registra el script principal con versionado basado en filemtime y localiza settings.
+ */
+function csfx_lb_register_script() {
+  $handle = 'csfx-local-backup';
+  $asset_path = CSFX_LB_PATH . 'assets/csfx-local-backup.js';
+  $asset_url  = CSFX_LB_URL . 'assets/csfx-local-backup.js';
+  $ver = '1.0.0';
+  if (file_exists($asset_path)) {
+    $ver = (string) filemtime($asset_path);
+  }
+
+  if (!wp_script_is($handle, 'registered')) {
+    wp_register_script(
+      $handle,
+      $asset_url,
+      array(),
+      $ver,
+      true
+    );
+  }
+
+  $checkout_actions = array('new-order', 'pending-order', 'payment-order', 'payment-cc-order');
+  $restful_enabled  = apply_filters('pos_enable_rest_ful', true);
+
+  static $localized = false;
+  if (!$localized) {
+    wp_localize_script(
+      $handle,
+      'CSFX_LB_SETTINGS',
+      array(
+        'checkout_actions' => $checkout_actions,
+        'restful_enabled'  => $restful_enabled,
+      )
+    );
+    $localized = true;
+  }
+}
+
+/**
  * Encola el JS del respaldo SOLO en la pantalla del POS (ajusta la heurística según tu instalación).
  */
 function csfx_lb_enqueue_assets() {
   if (!csfx_lb_is_pos_request()) return;
 
-  wp_enqueue_script(
-    'csfx-local-backup',
-    CSFX_LB_URL . 'assets/csfx-local-backup.js',
-    array(),
-    CSFX_LB_VERSION,
-    true
-  );
-
-  $checkout_actions = array('new-order', 'pending-order', 'payment-order', 'payment-cc-order');
-  $restful_enabled  = (bool) get_option('pos_enable_rest_ful');
-
-  wp_localize_script(
-    'csfx-local-backup',
-    'CSFX_LB_SETTINGS',
-    array(
-      'checkout_actions' => $checkout_actions,
-      'restful_enabled'  => $restful_enabled,
-    )
-  );
+  csfx_lb_register_script();
+  wp_enqueue_script('csfx-local-backup');
 }
 add_action('admin_enqueue_scripts', 'csfx_lb_enqueue_assets');
 add_action('wp_enqueue_scripts', 'csfx_lb_enqueue_assets');
+
+/**
+ * Añade el script al listado de OpenPOS (POS template) para asegurar carga en todas las variantes.
+ */
+add_filter('openpos_pos_footer_js', function($handles){
+  csfx_lb_register_script();
+  if (!in_array('csfx-local-backup', $handles, true)) {
+    $handles[] = 'csfx-local-backup';
+  }
+  return $handles;
+});
 
 /**
  * Admin Menu: Estado/Checklist + Cierre Diario (abre visor HTML en nueva pestaña).
