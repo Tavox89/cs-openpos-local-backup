@@ -8,6 +8,7 @@
 - Determina el modo REST mediante `apply_filters('pos_enable_rest_ful', true)` y reconoce todas las variantes de la vista POS
 - El badge flotante se movió a la esquina inferior izquierda para no interferir con los controles del POS
 - Versionado automático del script principal con `filemtime` para refrescar la caché del navegador en cada despliegue
+- Mensajes de diagnóstico cuando la API File System Access no está disponible (ej. sitios HTTP sin contexto seguro)
 
 ## 1.0.0 – MVP
 - Captura `openpos.cart.update`

@@ -19,6 +19,8 @@ Respaldo local (offline/online) de órdenes de OpenPOS:
 ## Requisitos de navegador
 - File System Access está soportado en Chrome, Edge, Opera y navegadores Chromium en escritorio (HTTPS o `localhost`).
 - En Safari/iOS y navegadores sin FS Access, el respaldo cae automáticamente al modo descarga + IndexedDB.
+- El botón **“Seleccionar carpeta…”** sólo aparecerá operativo en navegadores con File System Access habilitado; en otros casos permanece deshabilitado aunque se pueda exportar el último respaldo.
+- Necesitas un **contexto seguro**: usa HTTPS o `http://localhost`. Si trabajas con un dominio `http://` personalizado verás el mensaje “requiere HTTPS o localhost” porque el navegador bloquea la API.
 
 ## Instalación y uso
 1. Copia `cs-openpos-local-backup` dentro de `wp-content/plugins/` y activa el plugin.

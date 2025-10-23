@@ -11,10 +11,10 @@
   let fsRoot = null;
   let deviceId = null;
   const recentMap = new Map();
-  const DEBUG = !!window.CSFX_DEBUG;
+  const isDebug = () => !!window.CSFX_DEBUG;
 
   function log(...args) {
-    if (DEBUG) {
+    if (isDebug()) {
       console.log('[CSFX]', ...args);
     }
   }
@@ -178,6 +178,26 @@
     const actionFromBody = extractActionFromBody(bodyStr);
     if (actionFromBody) return actionFromBody;
     return extractActionFromUrl(url);
+  }
+
+  async function resolveRequestBody(input, init) {
+    if (init && Object.prototype.hasOwnProperty.call(init, 'body')) {
+      return init.body;
+    }
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      try {
+        const clone = input.clone();
+        if (typeof clone.formData === 'function') {
+          return await clone.formData();
+        }
+        if (typeof clone.text === 'function') {
+          return await clone.text();
+        }
+      } catch (err) {
+        log('resolveRequestBody error', err);
+      }
+    }
+    return '';
   }
 
   function isOpenposCheckout(url, body) {
@@ -628,10 +648,20 @@
 
   async function createPendingContext(url, method, body) {
     try {
-      if (!isOpenposCheckout(url, body)) return null;
       const bodyStr = bodyToString(body);
+      if (!isOpenposCheckout(url, bodyStr)) {
+        if (window.CSFX_DEBUG) {
+          log('POST ignorado (no es checkout)', { url, body: bodyStr.slice(0, 200) });
+        }
+        return null;
+      }
       const action = detectAction(url, bodyStr);
-      if (!action || !CHECKOUT_ACTIONS.includes(action)) return null;
+      if (!action || !CHECKOUT_ACTIONS.includes(action)) {
+        if (window.CSFX_DEBUG) {
+          log('Acción POS no reconocida', { url, action, body: bodyStr.slice(0, 200) });
+        }
+        return null;
+      }
       const payload = parseCheckoutPayload(bodyStr);
       const cartRaw = payload.cart ?? (payload.raw && payload.raw.cart) ?? null;
       const paymentsRaw = payload.payments ?? (payload.raw && payload.raw.payments) ?? null;
@@ -762,13 +792,34 @@
     const changeBtn = box.querySelector('#csfx-change');
     const exportBtn = box.querySelector('#csfx-export');
 
-    if (!('showDirectoryPicker' in window)) {
-      chooseBtn.disabled = true;
-      changeBtn.disabled = true;
-      status.textContent = 'sin File System Access';
+    const hasFSAccess = 'showDirectoryPicker' in window;
+    const secureContext = window.isSecureContext;
+    log('File System Access soportado:', hasFSAccess, 'Secure context:', secureContext);
+    if (!hasFSAccess) {
+      let message = 'sin FS Access';
+      if (!secureContext) {
+        message += ' (requiere HTTPS o localhost)';
+        if (window.CSFX_DEBUG) {
+          console.warn('[CSFX] File System Access requiere HTTPS/localhost.', { origin: window.location.origin, secureContext });
+        }
+      } else {
+        if (window.CSFX_DEBUG) {
+          console.warn('[CSFX] File System Access no disponible en este navegador.', { userAgent: navigator.userAgent });
+        }
+      }
+      status.textContent = message;
     }
 
     chooseBtn.addEventListener('click', async () => {
+      log('Click seleccionar carpeta');
+      if (!('showDirectoryPicker' in window)) {
+        log('No se puede seleccionar carpeta: File System Access no soportado');
+        if (window.CSFX_DEBUG) {
+          console.warn('[CSFX] Este navegador no soporta File System Access. Usa Chrome/Edge en HTTPS.');
+        }
+        updateUIState(false, 'sin FS Access');
+        return;
+      }
       const ok = await ensureRoot(true);
       if (ok) {
         await ensureDeviceId();
@@ -779,6 +830,14 @@
     });
 
     changeBtn.addEventListener('click', async () => {
+      log('Click cambiar carpeta');
+      if (!('showDirectoryPicker' in window)) {
+        log('No se puede cambiar carpeta: File System Access no soportado');
+        if (window.CSFX_DEBUG) {
+          console.warn('[CSFX] Este navegador no soporta File System Access. Usa Chrome/Edge en HTTPS.');
+        }
+        return;
+      }
       await deleteHandle('backupRoot');
       fsRoot = null;
       deviceId = null;
@@ -786,8 +845,12 @@
     });
 
     exportBtn.addEventListener('click', () => {
+      log('Click exportar último', !!window.CSFX_LAST_DOC);
       const doc = window.CSFX_LAST_DOC;
-      if (!doc) return;
+      if (!doc) {
+        console.warn('[CSFX] No hay respaldo reciente para exportar.');
+        return;
+      }
       const parts = doc.createdAtParts || nowParts();
       const name = `${parts.H}-${parts.M}-${parts.S}_${doc.orderNumber || doc.orderId || 'orden'}.json`;
       const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
@@ -824,10 +887,16 @@
     const url = typeof input === 'string' ? input : (input && input.url) || '';
     const method = (init && init.method) || (input && input.method) || 'GET';
     const upperMethod = String(method || 'GET').toUpperCase();
-    const body = init && Object.prototype.hasOwnProperty.call(init, 'body') ? init.body : (input ? input.body : undefined);
+
+    const bodyPromise = upperMethod === 'POST'
+      ? resolveRequestBody(input, init).catch(err => {
+          log('resolve body failed', err);
+          return '';
+        })
+      : Promise.resolve('');
 
     const ctxPromise = upperMethod === 'POST'
-      ? createPendingContext(url, upperMethod, body).catch(err => {
+      ? bodyPromise.then(bodyPayload => createPendingContext(url, upperMethod, bodyPayload)).catch(err => {
           log('fetch pending error', err);
           return null;
         })

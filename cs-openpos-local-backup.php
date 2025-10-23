@@ -65,34 +65,29 @@ function csfx_lb_is_pos_request() {
 }
 
 /**
- * Registra el script principal con versionado basado en filemtime y localiza settings.
+ * Encola el JS del respaldo SOLO en la pantalla del POS (ajusta la heurística según tu instalación).
  */
-function csfx_lb_register_script() {
-  $handle = 'csfx-local-backup';
+function csfx_lb_enqueue_assets() {
+  if (!csfx_lb_is_pos_request()) return;
+
   $asset_path = CSFX_LB_PATH . 'assets/csfx-local-backup.js';
-  $asset_url  = CSFX_LB_URL . 'assets/csfx-local-backup.js';
-  $ver = '1.0.0';
-  if (file_exists($asset_path)) {
-    $ver = (string) filemtime($asset_path);
-  }
+  $version = file_exists($asset_path) ? (string) filemtime($asset_path) : CSFX_LB_VERSION;
 
-  if (!wp_script_is($handle, 'registered')) {
-    wp_register_script(
-      $handle,
-      $asset_url,
-      array(),
-      $ver,
-      true
-    );
-  }
-
-  $checkout_actions = array('new-order', 'pending-order', 'payment-order', 'payment-cc-order');
-  $restful_enabled  = apply_filters('pos_enable_rest_ful', true);
+  wp_enqueue_script(
+    'csfx-local-backup',
+    CSFX_LB_URL . 'assets/csfx-local-backup.js',
+    array(),
+    $version,
+    true
+  );
 
   static $localized = false;
   if (!$localized) {
+    $checkout_actions = array('new-order', 'pending-order', 'payment-order', 'payment-cc-order');
+    $restful_enabled  = apply_filters('pos_enable_rest_ful', true);
+
     wp_localize_script(
-      $handle,
+      'csfx-local-backup',
       'CSFX_LB_SETTINGS',
       array(
         'checkout_actions' => $checkout_actions,
@@ -102,16 +97,6 @@ function csfx_lb_register_script() {
     $localized = true;
   }
 }
-
-/**
- * Encola el JS del respaldo SOLO en la pantalla del POS (ajusta la heurística según tu instalación).
- */
-function csfx_lb_enqueue_assets() {
-  if (!csfx_lb_is_pos_request()) return;
-
-  csfx_lb_register_script();
-  wp_enqueue_script('csfx-local-backup');
-}
 add_action('admin_enqueue_scripts', 'csfx_lb_enqueue_assets');
 add_action('wp_enqueue_scripts', 'csfx_lb_enqueue_assets');
 
@@ -119,7 +104,7 @@ add_action('wp_enqueue_scripts', 'csfx_lb_enqueue_assets');
  * Añade el script al listado de OpenPOS (POS template) para asegurar carga en todas las variantes.
  */
 add_filter('openpos_pos_footer_js', function($handles){
-  csfx_lb_register_script();
+  csfx_lb_enqueue_assets();
   if (!in_array('csfx-local-backup', $handles, true)) {
     $handles[] = 'csfx-local-backup';
   }
