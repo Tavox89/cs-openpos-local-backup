@@ -1,59 +1,43 @@
 # CS OpenPOS Local Backup
 
 Respaldo local (offline/online) de órdenes de OpenPOS:
-- **Primario:** File System Access (carpeta elegida por el usuario) → un `.json` por orden en `YYYY-MM-DD/`.
-- **Secundario:** IndexedDB (`csfx-orders/orders`) como índice para listados/UX.
-- **Fallback:** descarga `.json` si FS Access no está disponible.
+- **Primario:** File System Access en una carpeta elegida por el usuario → un `.json` por orden organizado en `YYYY-MM-DD/`.
+- **Índice:** IndexedDB (`csfx-orders/orders`) mantiene el catálogo local para búsquedas rápidas.
+- **Fallback:** descarga automática del `.json` cuando el navegador no expone File System Access.
 
-Incluye:
-- UI flotante en el POS (badge) para elegir carpeta y exportar el último documento.
-- **Cierre Diario**: visor HTML local (`assets/csfx-cierre.html`) con totales y exportación a CSV.
-- **Script Node** (`tools/cierre.js`) para generar CSV por día en `Reports/`.
+## Novedades 1.1
+- La carpeta de respaldo se persiste en IndexedDB y sólo se solicita la primera vez; el plugin revalida permisos en cada carga.
+- Los checkouts se detectan en los endpoints reales de OpenPOS (`admin-ajax.php` con `pos_action` o `/wp-json/op/v1/<acción>`).
+- Se crea un respaldo `pending` previo al pago y se actualiza a `confirmed` cuando llega el `order_number`/`order_id`, reescribiendo el archivo definitivo.
+- Botón “Cambiar carpeta…” para limpiar el handle almacenado y seleccionar otra ubicación.
+- `window.CSFX_DEBUG = true` habilita logs detallados sobre permisos, IndexedDB y detección de checkouts.
 
-## Instalación
-1. Copia la carpeta `cs-openpos-local-backup` al directorio `wp-content/plugins/`.
-2. Activa el plugin en WP Admin.
-3. Abre la pantalla del POS (OpenPOS) y pulsa **“Seleccionar carpeta…”** en el badge.
-4. Opera normalmente; cada checkout genera un `.json` en la subcarpeta del día.
+## Requisitos de navegador
+- File System Access está soportado en Chrome, Edge, Opera y navegadores Chromium en escritorio (HTTPS o `localhost`).
+- En Safari/iOS y navegadores sin FS Access, el respaldo cae automáticamente al modo descarga + IndexedDB.
+
+## Instalación y uso
+1. Copia `cs-openpos-local-backup` dentro de `wp-content/plugins/` y activa el plugin.
+2. Abre la pantalla de facturación de OpenPOS; el badge “Respaldo local” aparecerá en la esquina inferior derecha.
+3. Pulsa **“Seleccionar carpeta…”** una sola vez, elige la carpeta raíz para tus respaldos y concede permiso.
+4. Cada venta generará un archivo `.json` en la subcarpeta del día y un registro en IndexedDB.
+
+### Cambiar la carpeta de respaldo
+- Desde el badge, pulsa **“Cambiar carpeta…”** para borrar el handle guardado. El indicador pasará a rojo y podrás escoger una nueva carpeta con **“Seleccionar carpeta…”**.
+
+### Recuperar respaldos desde IndexedDB
+1. Abre las DevTools del navegador → pestaña **Application** → **IndexedDB** → base `csfx-orders` → store `orders`.
+2. Exporta los registros necesarios (pending o confirmed) y, si la carpeta original no está disponible, usa el botón **Exportar último** o exporta manualmente desde los datos almacenados.
 
 ## Cierre Diario
-- WP Admin → **CSFX Local Backup → Cierre Diario** → abre el visor en nueva pestaña.
-- **Seleccionar carpeta (día)** → ver totales → **Descargar CSV** o **Imprimir**.
+- En WP Admin ve a **CSFX Local Backup → Cierre Diario** y abre el visor (`assets/csfx-cierre.html`).
+- Selecciona la carpeta del día, revisa totales por método/cajero, descarga CSV o imprime el resumen.
 
 ## Script Node
 ```bash
 node tools/cierre.js "C:\\ClubSams\\OpenPOS-Backups" 2025-10-22
+```
+Genera `Reports/csfx_cierre_YYYY-MM-DD.csv` a partir de los `.json` de la fecha indicada.
 
-Genera Reports/csfx_cierre_YYYY-MM-DD.csv.
-
-Estado / Checklist
-
-WP Admin → CSFX Local Backup → Estado / Checklist.
-
-Fase 1 (MVP) marcada por defecto como lista.
-
-Fase 2 (Extensiones): marcar al completar.
-
-Consideraciones
-
-FS Access requiere HTTPS o localhost (Chrome/Edge/Brave en desktop). Safari/iOS: fallback por descarga + IndexedDB.
-
-Anti-duplicados: recentGate(orderNumber, 8s).
-
-Subcarpeta por día: YYYY-MM-DD.
-
-device-id.txt en la raíz de backups (persistente por terminal).
-
-Ref global: CSFX-<deviceId>-<YYYYMMDD-HHmmss>-<orderNumberOrIncId>.
-
-Roadmap (Fase 2)
-
-Comparar con WooCommerce (REST).
-
-Cifrado opcional (AES-GCM).
-
-Reimprimir ticket desde .json.
-
-Reimportar orden perdida con validaciones.
-
-BroadcastChannel para sincronizar visor auxiliar.
+## Estado / Checklist
+WP Admin → **CSFX Local Backup → Estado / Checklist** para marcar el avance de Fase 1 (MVP) y Fase 2 (Extensiones).

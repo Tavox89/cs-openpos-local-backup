@@ -2,13 +2,13 @@
 /**
  * Plugin Name: CS OpenPOS Local Backup
  * Description: Respaldo local (offline/online) de órdenes de OpenPOS: .json en disco (FS Access) + índice en IndexedDB + visor de cierre.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: ClubSams
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('CSFX_LB_VERSION', '1.0.0');
+define('CSFX_LB_VERSION', '1.1.0');
 define('CSFX_LB_URL', plugin_dir_url(__FILE__));
 define('CSFX_LB_PATH', plugin_dir_path(__FILE__));
 
@@ -16,17 +16,56 @@ define('CSFX_LB_PATH', plugin_dir_path(__FILE__));
  * Determina si la URL actual corresponde al POS de OpenPOS.
  */
 function csfx_lb_is_pos_request() {
-  $uri = strtolower($_SERVER['REQUEST_URI'] ?? '');
-  if (!$uri) return false;
+  static $cached = null;
+  if ($cached !== null) {
+    return $cached;
+  }
 
-  if (strpos($uri, '/pos/') !== false) return true;
-  if (strpos($uri, 'page=openpos') !== false) return true;
-  if (strpos($uri, 'openpos') !== false) return true;
-
+  $uri  = strtolower($_SERVER['REQUEST_URI'] ?? '');
   $page = isset($_GET['page']) ? strtolower((string) $_GET['page']) : '';
-  if ($page && strpos($page, 'openpos') !== false) return true;
 
-  return false;
+  if (isset($_GET['openpos']) && $_GET['openpos'] !== '') {
+    return $cached = true;
+  }
+
+  if (isset($_GET['openpos_base']) && $_GET['openpos_base'] !== '') {
+    return $cached = true;
+  }
+
+  if ($page && strpos($page, 'openpos') !== false) {
+    return $cached = true;
+  }
+
+  $slugs = array('openpos', 'openpos_sw', 'openpos_kitchen', 'openpos_bill', 'pos');
+  $configured = get_option('openpos_base');
+  if (is_string($configured)) {
+    $configured = trim(strtolower($configured));
+    if ($configured !== '' && !in_array($configured, $slugs, true)) {
+      $slugs[] = $configured;
+    }
+  }
+
+  if ($uri) {
+    foreach ($slugs as $slug) {
+      if ($slug === '') {
+        continue;
+      }
+
+      if (preg_match('#/' . preg_quote($slug, '#') . '(?:/|\\?|$)#', $uri)) {
+        return $cached = true;
+      }
+
+      if (strpos($uri, 'page=' . $slug) !== false) {
+        return $cached = true;
+      }
+
+      if (strpos($uri, '?' . $slug . '=') !== false || strpos($uri, '&' . $slug . '=') !== false) {
+        return $cached = true;
+      }
+    }
+  }
+
+  return $cached = false;
 }
 
 /**
@@ -41,6 +80,18 @@ function csfx_lb_enqueue_assets() {
     array(),
     CSFX_LB_VERSION,
     true
+  );
+
+  $checkout_actions = array('new-order', 'pending-order', 'payment-order', 'payment-cc-order');
+  $restful_enabled  = (bool) get_option('pos_enable_rest_ful');
+
+  wp_localize_script(
+    'csfx-local-backup',
+    'CSFX_LB_SETTINGS',
+    array(
+      'checkout_actions' => $checkout_actions,
+      'restful_enabled'  => $restful_enabled,
+    )
   );
 }
 add_action('admin_enqueue_scripts', 'csfx_lb_enqueue_assets');
