@@ -1,0 +1,130 @@
+{
+  "key": "csfx_1761452206078_a01279",
+  "status": "pending",
+  "action": "offline-idb",
+  "deviceId": "ebd497cb-1f44-481f-a3d7-7fdefdd4af6e",
+  "ref": "CSFX-ebd497cb-1f44-481f-a3d7-7fdefdd4af6e-20251026-001646-pending",
+  "dayFolder": "2025-10-26",
+  "createdAt": 1761452206078,
+  "createdAtText": "2025-10-26T04:16:46.078Z",
+  "createdAtParts": {
+    "y": 2025,
+    "m": "10",
+    "d": "26",
+    "H": "00",
+    "M": "16",
+    "S": "46"
+  },
+  "cartHash": "lid:1761452152709",
+  "cart": {
+    "items": [
+      {
+        "id": 1761452163490,
+        "sku": "00000000216",
+        "name": "Nova – Desodorante 150ml",
+        "qty": 1,
+        "price": 3.91,
+        "total": 3.91,
+        "discount": 0
+      },
+      {
+        "id": 1761452164651,
+        "sku": "00000000118",
+        "name": "Pacífico – Avena en hojuelas 800g",
+        "qty": 1,
+        "price": 5.22,
+        "total": 5.22,
+        "discount": 0
+      },
+      {
+        "id": 1761452165271,
+        "sku": "00000000205",
+        "name": "Pacífico – Aceite vegetal 1L",
+        "qty": 1,
+        "price": 25.35,
+        "total": 25.35,
+        "discount": 0
+      }
+    ],
+    "cashier": "Tavox",
+    "salesperson": "Tavox",
+    "register": {
+      "name": "Tavox"
+    }
+  },
+  "payments": [
+    {
+      "code": "cash",
+      "name": "Efectivo",
+      "amount": 34.48,
+      "change": 0,
+      "type": "offline",
+      "ref": "",
+      "currency": {
+        "code": "USD",
+        "symbol": "$",
+        "decimal_separator": ",",
+        "thousand_separator": "."
+      }
+    }
+  ],
+  "transactions": null,
+  "customer": {
+    "id": 0,
+    "group_id": "",
+    "firstname": "",
+    "lastname": "",
+    "name": "",
+    "email": "",
+    "address": "",
+    "phone": "",
+    "point": 0,
+    "point_rate": 0,
+    "point_config": null,
+    "discount": 0,
+    "addition_data": {},
+    "shipping_address": [],
+    "create_customer": 0,
+    "custom_tax": null
+  },
+  "totals": {
+    "sub_total": 34.48,
+    "grand_total": 34.48,
+    "total_paid": 34.48,
+    "remain_paid": 0,
+    "discount_amount": 0,
+    "currency": {
+      "sub_total": "34,48",
+      "tax_amount": "0,00",
+      "discount_amount": "0,00",
+      "grand_total": "34,48",
+      "total_paid": "34,48",
+      "remain_paid": "0,00"
+    }
+  },
+  "cashier": "Tavox",
+  "registerName": "Tavox",
+  "rawRequest": {
+    "url": "idb:orders",
+    "method": "IDB",
+    "action": "offline-idb",
+    "restful": false,
+    "thin": true
+  },
+  "rawResponse": null,
+  "orderNumber": 619,
+  "orderId": 619,
+  "orderLocalId": 1761452152709,
+  "pendingFileName": "pending_00-16-46_3787fa.json",
+  "fileName": "pending_00-16-46_3787fa.json",
+  "version": "1.2.0",
+  "orderData": null,
+  "eventName": null,
+  "eventDetail": null,
+  "eventAmount": null,
+  "eventSession": null,
+  "deviceRef": "ebd497cb-1f44-481f-a3d7-7fdefdd4af6e",
+  "lastAction": "offline-idb",
+  "updatedAt": 1761452209131,
+  "updatedAtText": "2025-10-26T04:16:49.131Z"
+}

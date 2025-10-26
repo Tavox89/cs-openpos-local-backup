@@ -2,13 +2,13 @@
 /**
  * Plugin Name: CS OpenPOS Local Backup
  * Description: Respaldo local (offline/online) de órdenes de OpenPOS: .json en disco (FS Access) + índice en IndexedDB + visor de cierre.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: ClubSams
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('CSFX_LB_VERSION', '1.1.0');
+define('CSFX_LB_VERSION', '1.2.0');
 define('CSFX_LB_URL', plugin_dir_url(__FILE__));
 define('CSFX_LB_PATH', plugin_dir_path(__FILE__));
 
@@ -83,8 +83,30 @@ function csfx_lb_enqueue_assets() {
 
   static $localized = false;
   if (!$localized) {
-    $checkout_actions = array('new-order', 'pending-order', 'payment-order', 'payment-cc-order');
+  $checkout_actions = array(
+    'new-order',
+    'pending-order',
+    'payment-order',
+    'payment-cc-order',
+    'order',
+    'order/create',
+    'transaction',
+    'transaction/create'
+  );
+    $current_user     = wp_get_current_user();
+    $staff_login      = $current_user && $current_user->exists() ? $current_user->user_login : '';
+    $staff_display    = $current_user && $current_user->exists() ? $current_user->display_name : '';
+    $staff_email      = $current_user && $current_user->exists() ? $current_user->user_email : '';
+
     $restful_enabled  = apply_filters('pos_enable_rest_ful', true);
+    $strict_endpoints = apply_filters('csfx_lb_strict_endpoints', true);
+    $network_hooks    = apply_filters('csfx_lb_network_hooks', 'none');
+    $confirm_response = apply_filters('csfx_lb_confirm_on_response', null);
+    $write_pending_fs = apply_filters('csfx_lb_write_pending_fs', 'always');
+    $require_folder   = apply_filters('csfx_lb_require_backup_folder', true);
+    $require_fs       = apply_filters('csfx_lb_require_backup_fs', false);
+    $prune_every_puts = (int) apply_filters('csfx_lb_prune_every_n_puts', 50);
+    $debounce_ms      = (int) apply_filters('csfx_lb_debounce_ms', 180);
 
     wp_localize_script(
       'csfx-local-backup',
@@ -92,6 +114,17 @@ function csfx_lb_enqueue_assets() {
       array(
         'checkout_actions' => $checkout_actions,
         'restful_enabled'  => $restful_enabled,
+        'strict_endpoints' => (bool) $strict_endpoints,
+        'network_hooks'    => $network_hooks,
+        'confirm_on_response' => is_null($confirm_response) ? null : (bool) $confirm_response,
+        'write_pending_fs' => $write_pending_fs,
+        'require_backup_folder' => (bool) $require_folder,
+        'require_backup_fs' => (bool) $require_fs,
+        'prune_every_n_puts' => max(1, $prune_every_puts),
+        'debounce_ms' => max(0, $debounce_ms),
+        'staff_login' => $staff_login,
+        'staff_display' => $staff_display,
+        'staff_email' => $staff_email,
       )
     );
     $localized = true;
@@ -99,6 +132,28 @@ function csfx_lb_enqueue_assets() {
 }
 add_action('admin_enqueue_scripts', 'csfx_lb_enqueue_assets');
 add_action('wp_enqueue_scripts', 'csfx_lb_enqueue_assets');
+
+/**
+ * Inyecta el shim de IndexedDB antes del main.js del POS.
+ */
+add_filter('openpos_pos_header_js', function($handles){
+  $tap_path = CSFX_LB_PATH . 'assets/csfx-idb-tap.js';
+  $tap_ver  = file_exists($tap_path) ? (string) filemtime($tap_path) : CSFX_LB_VERSION;
+
+  if (!wp_script_is('csfx-idb-tap', 'registered')) {
+    wp_register_script('csfx-idb-tap', CSFX_LB_URL . 'assets/csfx-idb-tap.js', array(), $tap_ver, false);
+  }
+
+  if (!wp_script_is('csfx-idb-tap', 'enqueued')) {
+    wp_enqueue_script('csfx-idb-tap');
+  }
+
+  if (!in_array('csfx-idb-tap', $handles, true)) {
+    array_unshift($handles, 'csfx-idb-tap');
+  }
+
+  return $handles;
+}, 1);
 
 /**
  * Añade el script al listado de OpenPOS (POS template) para asegurar carga en todas las variantes.
