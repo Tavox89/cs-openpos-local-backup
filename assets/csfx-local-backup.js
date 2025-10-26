@@ -912,7 +912,7 @@
     if (isDebug()) console.warn('[CSFX] BroadcastChannel no disponible', err);
   }
 
-  document.addEventListener('openpos.start.payment', async e => {
+  const enforceFolderBeforePayment = async e => {
     try {
       if (!(REQUIRE_BACKUP_FOLDER || REQUIRE_BACKUP_FS)) return;
       const granted = await ensureRoot(false);
@@ -921,10 +921,14 @@
       if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
       if (typeof e.stopPropagation === 'function') e.stopPropagation();
       uiControls?.showGuard?.();
+      uiControls?.scheduleAutoCollapse?.();
+      showBackupRequiredModal(false);
     } catch (err) {
       log('folder gate event error', err);
     }
-  }, true);
+  };
+
+  document.addEventListener('openpos.start.payment', enforceFolderBeforePayment, true);
 
   // Captura del pedido cuando se inicia el pago (funciona online y offline)
   document.addEventListener('openpos.start.payment', e => {
@@ -2228,7 +2232,6 @@
           <p style="margin:0;color:#333;line-height:1.4">Debes configurar la carpeta de respaldo local antes de continuar con el pago.</p>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end">
-          <button id="csfx-guard-close" style="padding:8px 14px;border:0;border-radius:6px;background:#7f8c8d;color:#fff;cursor:pointer">Cerrar</button>
           <button id="csfx-guard-open" style="padding:8px 14px;border:0;border-radius:6px;background:#09f;color:#fff;cursor:pointer">Seleccionar carpeta…</button>
         </div>
       </div>`;
@@ -2269,20 +2272,56 @@
       collapsePanel();
     });
 
+    let autoCollapseTimer = null;
+
+    const disableAppInteractions = () => {
+      document.body.style.overflow = 'hidden';
+      document.body.classList.add('csfx-guard-active');
+    };
+    const enableAppInteractions = () => {
+      document.body.style.overflow = '';
+      document.body.classList.remove('csfx-guard-active');
+    };
+
+    let guardObserver = null;
+    const ensureGuardInDom = () => {
+      if (!document.body.contains(guard)) {
+        document.body.appendChild(guard);
+      }
+    };
+    const startGuardObserver = () => {
+      if (guardObserver) return;
+      guardObserver = new MutationObserver(() => {
+        if (!FOLDER_GRANTED && !document.body.contains(guard)) {
+          document.body.appendChild(guard);
+          guard.style.display = 'flex';
+          guard.style.pointerEvents = 'all';
+        }
+      });
+      guardObserver.observe(document.body, { childList: true });
+    };
+    const stopGuardObserver = () => {
+      if (guardObserver) {
+        guardObserver.disconnect();
+        guardObserver = null;
+      }
+    };
+
     const showGuardOverlay = () => {
+      ensureGuardInDom();
       guard.style.display = 'flex';
       guard.style.pointerEvents = 'all';
+      disableAppInteractions();
+      startGuardObserver();
     };
     const hideGuardOverlay = () => {
       guard.style.display = 'none';
       guard.style.pointerEvents = 'none';
+      enableAppInteractions();
+      stopGuardObserver();
     };
 
-    const guardClose = guard.querySelector('#csfx-guard-close');
     const guardOpen = guard.querySelector('#csfx-guard-open');
-    guardClose.addEventListener('click', () => {
-      hideGuardOverlay();
-    });
     guardOpen.addEventListener('click', async () => {
       try {
         const ok = await ensureRoot(true);
@@ -2336,11 +2375,18 @@
       },
       hideGuard() {
         hideGuardOverlay();
+      },
+      scheduleAutoCollapse() {
+        if (autoCollapseTimer) return;
+        autoCollapseTimer = setTimeout(() => {
+          autoCollapseTimer = null;
+          collapsePanel();
+        }, 30000);
       }
     };
   }
 
-  function showBackupRequiredModal() {
+  function showBackupRequiredModal(showCloseButton = true) {
     if (!REQUIRE_BACKUP_FOLDER) return;
     const id = 'csfx-backup-required';
     if (document.getElementById(id)) return;
@@ -2352,7 +2398,7 @@
         <h3 style="margin:0 0 8px">Respaldo local requerido</h3>
         <p style="margin:0 0 12px">Debes configurar una carpeta de respaldo local antes de facturar.</p>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button id="csfx-modal-cancel" style="padding:6px 10px;border:0;border-radius:6px;background:#777;color:#fff;cursor:pointer">Cerrar</button>
+          ${showCloseButton ? '<button id="csfx-modal-cancel" style="padding:6px 10px;border:0;border-radius:6px;background:#777;color:#fff;cursor:pointer">Cerrar</button>' : ''}
           <button id="csfx-modal-open" style="padding:6px 10px;border:0;border-radius:6px;background:#09f;color:#fff;cursor:pointer">Seleccionar carpeta…</button>
         </div>
       </div>`;
@@ -2360,7 +2406,9 @@
     const close = () => {
       try { wrap.remove(); } catch (e) {}
     };
-    wrap.querySelector('#csfx-modal-cancel').onclick = () => close();
+    if (showCloseButton) {
+      wrap.querySelector('#csfx-modal-cancel').onclick = () => close();
+    }
     wrap.querySelector('#csfx-modal-open').onclick = async () => {
       try {
         const ok = await ensureRoot(true);
@@ -2370,9 +2418,13 @@
       } catch (err) {
         log('ensureRoot desde modal error', err);
       }
-      close();
+      if (FOLDER_GRANTED) close();
+      else showBackupRequiredModal(false);
       refreshHandleStatus();
     };
+    if (!showCloseButton) {
+      uiControls?.scheduleAutoCollapse?.();
+    }
   }
 
   window.CSFX = window.CSFX || {};

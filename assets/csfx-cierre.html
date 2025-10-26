@@ -6,12 +6,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
   body{font:14px system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px}
-  header{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  header{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;justify-content:space-between}
+  header .header-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   button{padding:8px 14px;border:0;border-radius:999px;font-weight:600;cursor:pointer;transition:transform .15s ease, box-shadow .15s ease;box-shadow:0 4px 12px rgba(0,0,0,.08)}
   button:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(0,0,0,.12)}
   #open{background:#2563eb;color:#fff}
   #export{background:#0f9b69;color:#fff}
   #print{background:#374151;color:#fff}
+  #verify-all{background:#f97316;color:#fff;box-shadow:0 6px 18px rgba(249,115,22,.24)}
+  #verify-all[disabled]{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
   table{border-collapse:collapse;width:100%;margin-top:12px}
   th,td{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}
   th{background:#f5f5f5}
@@ -26,6 +29,10 @@
   .status-pill{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;font-size:12px;text-transform:capitalize;border:1px solid rgba(244,191,64,.45);background:#fff8e1;color:#9c6b00}
   .status-pill.pending{background:#fff8e1;color:#9c6b00;border-color:rgba(244,191,64,.45)}
   .status-pill.verificado{background:#e6f9ee;color:#0b8c52;border-color:rgba(25,135,84,.35)}
+  .status-pill.warning{background:#fff7ed;color:#c2410c;border-color:rgba(251,146,60,.35)}
+  .status-pill.mismatch{background:#fee2e2;color:#b91c1c;border-color:rgba(220,38,38,.3)}
+  .status-pill.missing{background:#fef3c7;color:#92400e;border-color:rgba(217,119,6,.35)}
+  .status-pill.loading{background:#e0f2fe;color:#0369a1;border-color:rgba(3,105,161,.35)}
   .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#eef;border-radius:999px;font-size:12px;color:#334}
   .cashier-summary{margin-top:8px;padding:6px 12px;background:#f4f8ff;border-radius:8px;font-size:13px;color:#264a8a;display:flex;flex-wrap:wrap;gap:8px}
   .cashier-summary strong{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#1e3a8a}
@@ -40,8 +47,6 @@
   .summary-bar > div{font-size:13px;color:#264a8a;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
   .summary-bar > div > strong{margin-right:6px}
   .summary-chip{display:inline-block;background:#fff;color:#111;padding:2px 10px;border-radius:999px;font-size:12px;margin:2px 4px 2px 0;border:1px solid rgba(17,24,39,.08)}
-  .summary-bar .action-generate{margin-left:auto}
-  .action-btn.action-generate{background:#f97316;color:#fff}
   .payments-wrap{display:flex;flex-wrap:wrap;gap:6px}
   .payments-summary{display:flex;flex-wrap:wrap;gap:6px}
   .pay-pill{display:inline-flex;align-items:center;background:#eef;padding:4px 10px;border-radius:999px;margin:0;font-size:12px;line-height:1.3;border:1px solid rgba(99,102,241,.2)}
@@ -59,6 +64,12 @@
   .info-card{background:#f7f9ff;border-radius:10px;padding:10px 12px;box-shadow:0 1px 3px rgba(15,23,42,.08)}
   .info-label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;margin-bottom:6px}
   .info-value{font-size:14px;font-weight:600;color:#0f172a}
+  .status-block{margin-top:6px;font-size:12px;color:#6b7280}
+  .status-block a{color:#2563eb;text-decoration:none;font-weight:600}
+  .status-block a:hover{text-decoration:underline}
+  .status-notes{margin:4px 0 0;padding-left:18px;color:#6b7280}
+  .status-notes li{margin:2px 0;list-style:disc}
+  .status-error{color:#b91c1c;font-weight:600;font-size:12px;margin-top:6px}
   .raw-block{margin-top:8px;background:#0f172a;color:#f8fafc;border-radius:10px;overflow:hidden}
   .raw-block summary{cursor:pointer;padding:10px 14px;background:#1e293b;color:#fff;font-weight:600;outline:none}
   .raw-block[open]{box-shadow:0 10px 25px rgba(15,23,42,.3)}
@@ -79,14 +90,25 @@
   #detail-totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;font-size:13px;margin-top:6px}
   #detail-totals dt{font-weight:600;font-size:11px;text-transform:uppercase;color:#64748b}
   #detail-totals dd{margin:4px 0 0;color:#0f172a;font-weight:600;font-size:14px}
+  #detail-verify-section{margin-bottom:16px}
+  #detail-verify{border-radius:10px;padding:12px;font-size:13px;line-height:1.4}
+  #detail-verify.is-ok{background:#ecfdf5;border:1px solid rgba(16,185,129,.35);color:#047857}
+  #detail-verify.is-warning{background:#fff7ed;border:1px solid rgba(251,146,60,.35);color:#c2410c}
+  #detail-verify.is-error{background:#fef2f2;border:1px solid rgba(239,68,68,.35);color:#b91c1c}
+  #detail-verify.is-missing{background:#fff7ed;border:1px solid rgba(217,119,6,.35);color:#92400e}
+  #detail-verify .verify-label{font-weight:600;margin-bottom:4px;font-size:14px}
+  #detail-verify ul{margin:6px 0 0;padding-left:18px}
 </style>
 </head>
 <body>
 <header>
-  <button id="open">Seleccionar carpeta (día)</button>
-  <button id="export" disabled>Descargar CSV</button>
-  <button id="print" disabled>Imprimir</button>
-  <span id="info" class="muted"></span>
+  <div class="header-controls">
+    <button id="open">Seleccionar carpeta (día)</button>
+    <button id="export" disabled>Descargar CSV</button>
+    <button id="print" disabled>Imprimir</button>
+    <span id="info" class="muted"></span>
+  </div>
+  <button id="verify-all" class="action-btn action-verify-all" disabled>Verificación general</button>
 </header>
 
 <section id="summary"></section>
@@ -103,6 +125,10 @@
       <section>
         <h3>Información general</h3>
         <div id="detail-info" class="info-grid"></div>
+      </section>
+      <section id="detail-verify-section" hidden>
+        <h3>Verificación</h3>
+        <div id="detail-verify"></div>
       </section>
       <section>
         <h3>Productos</h3>
@@ -129,6 +155,95 @@
   const $ = s=>document.querySelector(s);
   let folder=null;
   let orders=[];
+  let currentDetailOrderId = null;
+  const EMBED_CONTEXT = window.CSFX_LB_EMBED_CONTEXT || null;
+  const REST_BASE = (EMBED_CONTEXT && EMBED_CONTEXT.restRoot) ? EMBED_CONTEXT.restRoot.replace(/\/$/,'') : `${window.location.origin}/wp-json/csfx-lb/v1`;
+  const restContext = {
+    nonce: EMBED_CONTEXT && EMBED_CONTEXT.nonce ? EMBED_CONTEXT.nonce : null,
+    user: EMBED_CONTEXT && EMBED_CONTEXT.user ? EMBED_CONTEXT.user : null,
+    loading: false
+  };
+  let restContextPromise = null;
+  let verifyAllRunning = false;
+  const VERIFICATION_LABELS = {
+    pending: { label: 'Sin sinc.', pill: 'pending' },
+    loading: { label: 'Verificando…', pill: 'loading' },
+    verified: { label: 'Verificado', pill: 'verificado' },
+    verified_with_warnings: { label: 'Verificado con advertencias', pill: 'warning' },
+    mismatch: { label: 'Con diferencias', pill: 'mismatch' },
+    missing: { label: 'Pedido no encontrado', pill: 'missing' },
+    error: { label: 'Error de verificación', pill: 'mismatch' }
+  };
+  const VERIFICATION_SUMMARY_TITLES = {
+    pending: 'Sin sinc.',
+    loading: 'Verificando',
+    verified: 'Verificado',
+    verified_with_warnings: 'Verificado con advertencias',
+    mismatch: 'Con diferencias',
+    missing: 'No encontrado',
+    error: 'Errores'
+  };
+
+  function sanitizeDisplayText(value){
+    if (value == null) return '';
+    const text = String(value).trim();
+    if (!text) return '';
+    if (text.length > 200) return '';
+    if (/\r|\n/.test(text)) return '';
+    if (text.includes('<') || text.includes('>')) return '';
+    if (/^const\s/.test(text) || /^function\s/.test(text) || /^class\s/.test(text)) return '';
+    return text;
+  }
+
+  function alertFriendly(err, fallback){
+    if (err) {
+      console.warn('[CSFX][Verify]', err);
+    }
+    alert(fallback);
+  }
+
+  async function ensureRestContext(force = false){
+    if (!force && restContext.nonce) {
+      return restContext;
+    }
+    if (restContextPromise) {
+      return restContextPromise;
+    }
+    restContext.loading = true;
+    restContextPromise = fetch(`${REST_BASE}/context`, {
+      credentials: 'include'
+    })
+      .then(async response => {
+        if (!response.ok) {
+          const status = response.status;
+          const text = await response.text().catch(()=> '');
+          let message = 'No se pudo preparar la verificación.';
+          if (status === 401 || status === 403) {
+            message = 'Permiso denegado. Inicia sesión en WordPress con acceso a WooCommerce.';
+          } else if (status === 404) {
+            message = 'Servicio de verificación no encontrado. Verifica que el plugin esté activo.';
+          } else if (text) {
+            console.warn('[CSFX][Verify][context] respuesta inesperada', text.slice(0, 200));
+          }
+          throw new Error(message);
+        }
+        return response.json();
+      })
+      .then(data => {
+        restContext.nonce = data && data.nonce ? data.nonce : null;
+        restContext.user = data && data.user ? data.user : null;
+        return restContext;
+      })
+      .catch(err => {
+        restContext.nonce = null;
+        throw err;
+      })
+      .finally(() => {
+        restContext.loading = false;
+        restContextPromise = null;
+      });
+    return restContextPromise;
+  }
 
   const toAmount = value => {
     if (value == null || value === '') return 0;
@@ -357,7 +472,9 @@
 
     const createdAtISO = createdAtDate ? createdAtDate.toISOString() : (doc.createdAtText || orderData.created_at_utc || '');
     const createdAtDisplay = createdAtDate ? createdAtDate.toLocaleString('es-VE', { hour12: true }) : (createdAtISO || '—');
-    const createdAtTime = createdAtDate ? createdAtDate.toLocaleTimeString('es-VE', { hour12: true }) : '—';
+    const createdAtTime = createdAtDate ? createdAtDate.toLocaleTimeString('es-VE', {
+      hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+    }) : '—';
 
     const status = (doc.status || orderData.status || 'pending').toString();
     if (doc && typeof doc === 'object') {
@@ -383,7 +500,11 @@
       orderData,
       registerName,
       createdAtParts: doc.createdAtParts || {},
-      totals: totalsData
+      totals: totalsData,
+      docStatus: status,
+      verification: null,
+      verificationError: null,
+      verificationLoading: false
     };
   }
 
@@ -399,8 +520,15 @@
       const info = byCashier.get(o.cashier);
       info.total += toAmount(o.total);
       info.count++;
-      const st = (o.status || 'pending').toLowerCase();
-      byStatus.set(st, (byStatus.get(st) || 0) + 1);
+      let statusKey = 'pending';
+      if (o.verificationLoading) {
+        statusKey = 'loading';
+      } else if (o.verification && o.verification.status) {
+        statusKey = o.verification.status;
+      } else if (o.verificationError) {
+        statusKey = 'error';
+      }
+      byStatus.set(statusKey, (byStatus.get(statusKey) || 0) + 1);
       o.payments.forEach(p=>{
         const key = p.label || 'Pago';
         const bucket = byMethod.get(key) || { amount: 0, change: 0 };
@@ -413,7 +541,7 @@
     const cashierChips = [...byCashier.entries()].map(([name,val])=>`<span class="summary-chip">${name}: ${fmtMoney(val.total)} (${val.count})</span>`).join('') || '<span class="summary-chip">—</span>';
     const methodChips = [...byMethod.entries()].map(([m,v])=>`<span class="summary-chip">${m}: ${fmtMoney(v.amount)}${v.change > 0 ? ` (Vuelto: ${fmtMoney(v.change)})` : ''}</span>`).join('') || '<span class="summary-chip">—</span>';
     const statusChips = overall.orders ? [...byStatus.entries()].map(([s,c])=>{
-      const label = s.charAt(0).toUpperCase() + s.slice(1);
+      const label = VERIFICATION_SUMMARY_TITLES[s] || s;
       return `<span class="summary-chip">${c} ${label}</span>`;
     }).join('') : '<span class="summary-chip">—</span>';
 
@@ -437,11 +565,172 @@
       <div class="summary-bar">
         <div><strong>Por cajero:</strong> ${cashierChips}</div>
         <div><strong>Por método:</strong> ${methodChips}</div>
-        <button class="action-btn action-generate" data-id="all">Verificación general</button>
       </div>`;
 
     $('#export').disabled = orders.length===0;
     $('#print').disabled = orders.length===0;
+    const verifyAllBtn = $('#verify-all');
+    if (verifyAllBtn) {
+      verifyAllBtn.disabled = orders.length===0 || verifyAllRunning;
+      verifyAllBtn.textContent = verifyAllRunning ? 'Verificando…' : 'Verificación general';
+    }
+  }
+
+  function getVerificationMeta(order){
+    if (!order) {
+      return { status: 'pending', label: VERIFICATION_LABELS.pending.label, pill: VERIFICATION_LABELS.pending.pill, warnings: [], differences: [], message: '' };
+    }
+    if (order.verificationLoading) {
+      return { status: 'loading', label: VERIFICATION_LABELS.loading.label, pill: VERIFICATION_LABELS.loading.pill, warnings: [], differences: [], message: '' };
+    }
+    if (order.verification && order.verification.status) {
+      const base = VERIFICATION_LABELS[order.verification.status] || VERIFICATION_LABELS.pending;
+      const warnings = Array.isArray(order.verification.warnings)
+        ? order.verification.warnings.map(sanitizeDisplayText).filter(Boolean)
+        : [];
+      if (Array.isArray(order.verification.duplicates) && order.verification.duplicates.length) {
+        order.verification.duplicates.forEach(name => {
+          const text = sanitizeDisplayText(name);
+          if (text) warnings.push(`Duplicación detectada: ${text}`);
+        });
+      }
+      let message = sanitizeDisplayText(order.verification.message);
+      if (order.verification.status === 'missing' && !message) {
+        warnings.push('Pedido no encontrado en WooCommerce.');
+      }
+      if (order.verification.created_order) {
+        warnings.push('Pedido creado automáticamente durante el resync.');
+      }
+      return {
+        status: order.verification.status,
+        label: base.label,
+        pill: base.pill,
+        warnings,
+        differences: Array.isArray(order.verification.differences)
+          ? order.verification.differences.map(sanitizeDisplayText).filter(Boolean)
+          : [],
+        message,
+        adminUrl: order.verification.adminUrl || '',
+        noteAdded: !!order.verification.note_added,
+        resync: !!order.verification.resync,
+        resyncNote: !!order.verification.resync_note
+      };
+    }
+    if (order.verificationError) {
+      const message = sanitizeDisplayText(order.verificationError) || 'Error de verificación';
+      return { status: 'error', label: VERIFICATION_LABELS.error.label, pill: VERIFICATION_LABELS.error.pill, warnings: [], differences: [], message };
+    }
+    return { status: 'pending', label: VERIFICATION_LABELS.pending.label, pill: VERIFICATION_LABELS.pending.pill, warnings: [], differences: [], message: '' };
+  }
+
+  function renderNoteList(list, cssClass = 'status-notes'){
+    if (!Array.isArray(list) || !list.length) return '';
+    const items = list.map(sanitizeDisplayText).filter(Boolean);
+    if (!items.length) return '';
+    return `<ul class="${cssClass}">${items.map(item => `<li>${safe(item)}</li>`).join('')}</ul>`;
+  }
+
+  function buildStatusHtml(order){
+    const meta = getVerificationMeta(order);
+    const pieces = [`<span class="status-pill ${meta.pill || 'pending'}">${safe(meta.label)}</span>`];
+    if (meta.message) {
+      pieces.push(`<div class="status-block">${safe(meta.message)}</div>`);
+    }
+    if (Array.isArray(meta.differences) && meta.differences.length) {
+      pieces.push(renderNoteList(meta.differences));
+    }
+    if (Array.isArray(meta.warnings) && meta.warnings.length) {
+      pieces.push(renderNoteList(meta.warnings));
+    }
+    if (order && order.verification && order.verification.note_added) {
+      pieces.push('<div class="status-block muted">Nota agregada en WooCommerce</div>');
+    }
+    if (order && order.verification && order.verification.resync_note) {
+      pieces.push('<div class="status-block muted">Resync registrado en WooCommerce</div>');
+    }
+    if (meta.adminUrl) {
+      pieces.push(`<div class="status-block"><a href="${meta.adminUrl}" target="_blank" rel="noopener">Abrir en WooCommerce</a></div>`);
+    }
+    return pieces.join('');
+  }
+
+  async function performVerification(order, mode = 'verify'){
+    if (!order || order.verificationLoading) return;
+    order.verificationLoading = true;
+    order.verificationError = null;
+    renderGroups();
+    try {
+      const data = await requestVerification(order, mode);
+      order.verification = data;
+      order.verification.created_order = !!data.created_order;
+      order.verificationError = null;
+      if (data && (data.status === 'verified' || data.status === 'verified_with_warnings')) {
+        order.status = 'verificado';
+        if (order.doc && typeof order.doc === 'object') {
+          order.doc.status = 'verificado';
+        }
+      }
+    } catch (err) {
+      console.warn('[CSFX][Verify] fallo', mode, order.orderNumber, err);
+      order.verificationError = mode === 'resync'
+        ? 'No se pudo ejecutar el resync.'
+        : 'No se pudo preparar la verificación.';
+      throw err;
+    } finally {
+      order.verificationLoading = false;
+      renderGroups();
+      buildSummary();
+      if (currentDetailOrderId === order.id) {
+        fillDetail(order);
+      }
+    }
+  }
+
+  async function requestVerification(order, mode = 'verify'){
+    if (!order) throw new Error('Pedido no disponible');
+    await ensureRestContext();
+    const endpoint = mode === 'resync' ? 'resync-order' : 'verify-order';
+    const url = `${REST_BASE}/${endpoint}`;
+    const payload = {
+      orderNumber: order.orderNumber || order.doc?.orderNumber || null,
+      orderId: order.orderId || order.doc?.orderId || null,
+      doc: order.doc || null,
+      addNote: true
+    };
+
+    const send = async (nonce) => {
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+      if (nonce) headers['X-WP-Nonce'] = nonce;
+      return fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify(payload)
+      });
+    };
+
+    let response = await send(restContext.nonce);
+    if (response.status === 401) {
+      restContext.nonce = null;
+      await ensureRestContext(true);
+      response = await send(restContext.nonce);
+    }
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (err) {
+      data = {};
+    }
+
+    if (!response.ok) {
+      const message = data && data.message ? data.message : 'Error de verificación';
+      throw new Error(message);
+    }
+
+    return data;
   }
 
   function renderGroups(){
@@ -507,19 +796,27 @@
             }).join('')}</div>`
           : '<span class="muted">—</span>';
         const createdAtLocale = o.createdAtTime || '—';
-        const statusRaw = (o.status || 'pending').toString();
-        const statusLabel = statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1);
-        const statusClass = statusRaw.toLowerCase().replace(/\s+/g,'-');
+        const statusHtml = buildStatusHtml(o);
+        const verificationMeta = getVerificationMeta(o);
+        const verifyDisabled = o.verificationLoading || verifyAllRunning;
+        const verifyBtnLabel = o.verificationLoading ? 'Verificando…' : (o.verification && o.verification.status && o.verification.status !== 'missing' ? 'Reverificar' : 'Verificar');
+        const verifyBtnDisabledAttr = verifyDisabled ? 'disabled' : '';
+        const resyncNeeded = verificationMeta.status === 'missing';
+        const resyncBtnDisabledAttr = verifyDisabled ? 'disabled' : '';
+        const resyncButton = resyncNeeded ? `<button class="action-btn btn-verify action-resync" data-id="${o.id}" data-action="resync" ${resyncBtnDisabledAttr}>${o.verificationLoading ? 'Resync…' : 'Re-sync'}</button>` : '';
+        const adminButton = (o.verification && o.verification.adminUrl) ? `<button class="action-btn btn-view action-admin" data-id="${o.id}" data-action="open-order">Woo</button>` : '';
         tr.innerHTML = `
           <td>${safe(o.orderNumber)}</td>
           <td>${safe(o.customerName)}</td>
           <td>${safe(o.totalDisplay)}</td>
           <td>${paymentsHtml}</td>
           <td>${safe(createdAtLocale)}</td>
-          <td><span class="status-pill ${statusClass}">${safe(statusLabel)}</span></td>
+          <td>${statusHtml}</td>
           <td class="actions-cell">
-            <button class="action-btn btn-view" data-id="${o.id}" data-action="detail">Ver</button>
-            <button class="action-btn btn-verify action-verify" data-id="${o.id}">Verificar</button>
+            <button class="action-btn btn-view" data-id="${o.id}" data-action="detail">Detalle</button>
+            <button class="action-btn btn-verify action-verify" data-id="${o.id}" data-action="verify" ${verifyBtnDisabledAttr}>${verifyBtnLabel}</button>
+            ${resyncButton}
+            ${adminButton}
           </td>`;
         tbody.appendChild(tr);
       });
@@ -536,6 +833,51 @@
     const itemsTable = $('#detail-items tbody');
     const payTable = $('#detail-payments tbody');
     const raw = $('#detail-raw');
+    const verifySection = $('#detail-verify-section');
+    const verifyBox = $('#detail-verify');
+
+    currentDetailOrderId = order.id;
+
+    if (verifySection && verifyBox) {
+      const meta = getVerificationMeta(order);
+      if (meta.status === 'pending' && !order.verification && !order.verificationError) {
+        verifySection.setAttribute('hidden', '');
+        verifyBox.innerHTML = '';
+        verifyBox.className = '';
+      } else {
+        verifySection.removeAttribute('hidden');
+        let className = 'is-warning';
+        if (meta.status === 'verified') className = 'is-ok';
+        else if (meta.status === 'verified_with_warnings') className = 'is-warning';
+        else if (meta.status === 'missing') className = 'is-missing';
+        else if (meta.status === 'mismatch' || meta.status === 'error') className = 'is-error';
+        else if (meta.status === 'loading') className = 'is-warning';
+        verifyBox.className = className;
+        const parts = [`<div class="verify-label">${safe(meta.label)}</div>`];
+        if (meta.message) {
+          parts.push(`<div>${safe(meta.message)}</div>`);
+        }
+        if (Array.isArray(meta.differences) && meta.differences.length) {
+          parts.push(renderNoteList(meta.differences));
+        }
+        if (Array.isArray(meta.warnings) && meta.warnings.length) {
+          parts.push(renderNoteList(meta.warnings));
+        }
+        if (order.verification && order.verification.note_added) {
+          parts.push('<div>Nota agregada en WooCommerce.</div>');
+        }
+        if (order.verification && order.verification.resync_note) {
+          parts.push('<div>Resync registrado en WooCommerce.</div>');
+        }
+        if (meta.adminUrl) {
+          parts.push(`<div><a href="${meta.adminUrl}" target="_blank" rel="noopener">Abrir en WooCommerce</a></div>`);
+        }
+        if (order.verificationError && meta.status === 'error') {
+          parts.push(`<div>${safe(order.verificationError)}</div>`);
+        }
+        verifyBox.innerHTML = parts.join('');
+      }
+    }
 
     const infoPairs = [
       ['Factura', order.orderNumber || '—'],
@@ -546,7 +888,8 @@
       ['Cliente', order.customerName || 'Sin cliente'],
       ['Total', order.totalDisplay || fmtMoney(order.total)],
       ['Descuento general', order.discountDisplay || fmtMoney(order.discountAmount)],
-      ['Status', order.status || 'sin sinc.'],
+      ['Status verificación', getVerificationMeta(order).label || 'Sin sinc.'],
+      ['Status POS', order.docStatus || '—'],
       ['Nota', order.orderData?.note || '—'],
       ['Archivo', order.fileName || '—']
     ];
@@ -627,47 +970,45 @@
     $('#detail').removeAttribute('hidden');
   }
 
-  function hideDetail(){ const d=$('#detail'); d.style.display='none'; d.setAttribute('hidden',''); }
+  function hideDetail(){ const d=$('#detail'); d.style.display='none'; d.setAttribute('hidden',''); currentDetailOrderId = null; }
 
   $('#detail-close').addEventListener('click', hideDetail);
   $('#detail').addEventListener('click', e=>{ if(e.target === $('#detail')) hideDetail(); });
 
   const ordersContainer = $('#orders');
-  ordersContainer.addEventListener('click', e=>{
+  ordersContainer.addEventListener('click', async e=>{
     const btn = e.target.closest('button');
     if(!btn) return;
     const id = btn.dataset.id;
-    const action = btn.dataset.action;
+    const action = btn.dataset.action || '';
     const order = orders.find(o=>o.id === id);
     if(!order) return;
     if(action === 'detail') {
       fillDetail(order);
-    } else if(btn.classList.contains('action-verify')) {
-      order.status = 'verificado';
-      if (order.doc && typeof order.doc === 'object') {
-        order.doc.status = order.status;
-      }
-      alert(`Orden ${order.orderNumber || order.id} verificada.`);
-      renderGroups();
-      buildSummary();
-    }
-  });
-
-  document.addEventListener('click', e=>{
-    const btn = e.target.closest('.action-generate');
-    if(!btn) return;
-    e.preventDefault();
-    if (!orders.length) {
-      alert('No hay órdenes para verificar.');
       return;
     }
-    orders.forEach(order => {
-      order.status = 'verificado';
-      if (order.doc) order.doc.status = order.status;
-    });
-    alert('Verificación general completada.');
-    renderGroups();
-    buildSummary();
+    if(action === 'verify') {
+      try {
+        await performVerification(order, 'verify');
+      } catch (err) {
+        alertFriendly(err, 'No se pudo verificar la orden.');
+      }
+      return;
+    }
+    if(action === 'resync') {
+      try {
+        await performVerification(order, 'resync');
+      } catch (err) {
+        alertFriendly(err, 'No se pudo ejecutar el resync.');
+      }
+      return;
+    }
+    if(action === 'open-order') {
+      if (order.verification && order.verification.adminUrl) {
+        window.open(order.verification.adminUrl, '_blank', 'noopener');
+      }
+      return;
+    }
   });
 
   function toCSV(list){
@@ -675,6 +1016,7 @@
     const lines = [head.join(',')];
     list.forEach(o=>{
       const payments = o.payments.map(p=>`${p.label} ${p.display}`).join(' | ');
+      const statusLabel = getVerificationMeta(o).label || 'Sin sinc.';
       lines.push([
         o.cashier,
         o.orderNumber,
@@ -683,7 +1025,7 @@
         o.discountDisplay || fmtMoney(o.discountAmount),
         payments,
         o.createdAtDisplay || o.createdAt,
-        o.status || 'sin sinc.',
+        statusLabel,
         o.fileName
       ].map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(','));
     });
@@ -699,6 +1041,7 @@
       folder = await showDirectoryPicker({mode:'read'});
       $('#info').textContent = 'Carpeta: ' + (folder.name || '(día)');
       orders=[];
+      verifyAllRunning = false;
 
       for await (const entry of folder.values()){
         if(entry.kind!=='file' || !entry.name.endsWith('.json')) continue;
@@ -734,3 +1077,29 @@
 </script>
 </body>
 </html>
+  const verifyAllButton = $('#verify-all');
+  if (verifyAllButton) {
+    verifyAllButton.addEventListener('click', async ()=>{
+      if (!orders.length || verifyAllRunning) return;
+      verifyAllRunning = true;
+      buildSummary();
+      try {
+        try {
+          await ensureRestContext();
+        } catch (err) {
+          alertFriendly(err, 'No se pudo preparar la verificación.');
+          return;
+        }
+        for (const order of orders) {
+          try {
+            await performVerification(order, 'verify');
+          } catch (err) {
+            console.warn('Verificación fallida', order.orderNumber, err);
+          }
+        }
+      } finally {
+        verifyAllRunning = false;
+        buildSummary();
+      }
+    });
+  }

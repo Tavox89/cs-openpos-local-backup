@@ -16,6 +16,7 @@ Respaldo local (offline/online) de órdenes de OpenPOS:
 - `require_backup_folder` (por defecto `true`): bloquea los requests de checkout (`order/create`, `transaction/create` y sus variantes AJAX) hasta que se haya concedido acceso a una carpeta. Se muestra un modal con acciones para seleccionar carpeta desde el propio POS (el badge sigue intacto).
 - `require_backup_fs` (por defecto `false`): fuerza un overlay de “Respaldo local requerido”, bloquea cualquier intento de cobro y evita el fallback por descarga hasta que el usuario seleccione la carpeta local.
 - Los pending “thin” reconstruyen totales cuando OpenPOS no los entrega (suma de ítems o pagos), garantizando montos consistentes en el visor de cierre incluso en modo offline.
+- Verificación directa contra WooCommerce desde el visor de cierre: botones de verificación individual/general, notas automáticas (“Cierre verificado online/offline”) y flujo de re-sync cuando la orden no existe aún en Woo.
 
 ## Novedades 1.1
 - La carpeta de respaldo se persiste en IndexedDB y sólo se solicita la primera vez; el plugin revalida permisos en cada carga.
@@ -48,8 +49,24 @@ Respaldo local (offline/online) de órdenes de OpenPOS:
 2. Exporta los registros necesarios (pending o confirmed) y, si la carpeta original no está disponible, usa el botón **Exportar último** o exporta manualmente desde los datos almacenados.
 
 ## Cierre Diario
-- En WP Admin ve a **CSFX Local Backup → Cierre Diario** y abre el visor (`assets/csfx-cierre.html`).
+- En WP Admin ve a **CSFX Local Backup → Cierre Diario**; el visor se carga embebido dentro del panel (o puedes abrirlo en pestaña nueva con el botón “Abrir visor en pestaña nueva”).
 - Selecciona la carpeta del día, revisa totales por método/cajero, descarga CSV o imprime el resumen.
+- El botón **Verificación general** ejecuta la comparación de todas las órdenes cargadas contra WooCommerce (requiere sesión con permisos `manage_woocommerce`).
+- En entornos locales sin HTTPS el visor sigue funcionando porque se sirve mediante `admin-post.php?action=csfx_lb_viewer`, reutilizando tu sesión actual de WordPress.
+- Si una orden no existe, pulsa **Re-sync**: se crea automáticamente en WooCommerce usando el snapshot (ítems, totales, pagos y vuelto), se registran las transacciones POS y se vuelve a verificar en el acto.
+
+### Verificación vs WooCommerce
+- Cada fila ofrece **Detalle**, **Verificar/Reverificar** y, si aplica, **Re-sync** (para intentar localizar órdenes aún no creadas en WooCommerce). Cuando la orden existe y coincide, se agrega la nota “CSFX Local Backup: Cierre verificado online/offline” en el pedido.
+- Estados visibles en la tabla y en el panel derecho:
+  - **Sin sinc.** (pendiente)
+  - **Verificando…**
+  - **Verificado** / **Verificado con advertencias** (mismatches menores o duplicados detectados)
+  - **Con diferencias** (totales, productos o pagos no coinciden)
+  - **Pedido no encontrado** (habilita el botón Re-sync)
+  - **Error de verificación** (problemas de red o permisos)
+- Las advertencias y diferencias listadas muestran qué campo no coincidió (totales, métodos de pago, ítems duplicados, etc.) y se incluyen en la exportación CSV como columna `Status`.
+- El botón **Woo** abre el pedido en el admin para una revisión manual. Si el re-sync encuentra o crea la orden, se añaden las notas “CSFX Local Backup: Pedido creado mediante resync automático.” y “CSFX Local Backup: Resync ejecutado desde el visor de cierre”.
+- Si no tienes sesión o permisos suficientes, el visor avisa y no ejecuta la verificación hasta que accedas con un usuario que tenga `manage_woocommerce`.
 
 ## Script Node
 ```bash

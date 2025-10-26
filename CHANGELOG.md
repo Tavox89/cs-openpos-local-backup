@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.3 – Resync con creación de pedidos
+- El flujo **Re-sync** crea automáticamente el pedido en WooCommerce cuando no existe: replica ítems, totales, pagos/vueltos y las transacciones POS, agrega la nota “CSFX Local Backup: Pedido creado mediante resync automático.” y vuelve a ejecutar la verificación.
+- Mejoras en la comparación de pagos: soporte para campos `out_amount` / `return_amount` y mensajes detallados con montos/vueltos local vs WooCommerce.
+- Ajustes en la normalización de ítems (usa nombres normalizados) y en las fechas para respetar la zona horaria de WooCommerce.
+- El visor ahora detecta si el pedido se creó durante el resync y lo muestra como advertencia.
+
+## 1.2.1 – Verificación y resync desde el visor
+- API REST (`/csfx-lb/v1/context|verify-order|resync-order`) para comparar pedidos del backup contra WooCommerce y registrar notas automáticas.
+- El visor `csfx-cierre.html` muestra estados de verificación por orden, advertencias/diferencias, botón “Re-sync” cuando la orden no existe y acceso directo a la pantalla del pedido en WooCommerce.
+- Botón “Verificación general” en la cabecera que recorre todas las órdenes cargadas respetando sesiones y permisos (`manage_woocommerce`).
+- Manejo mejorado de errores: mensajes claros cuando faltan permisos o el servicio REST no está disponible, evitando mostrar HTML completo en los avisos.
+- Exportación CSV actualizada para reflejar el estado de verificación y los totales por método/cajero del nuevo resumen.
+- Nuevo endpoint `admin-post.php?action=csfx_lb_viewer` y vista embebida dentro de WP-Admin, para que el visor herede la sesión del usuario incluso en entornos locales sin HTTPS.
+
 ## 1.2.0 – Captura por evento
 - Captura pedidos al dispararse `openpos.start.payment`, generando un respaldo inmediato tanto en modo online como offline.
 - Se incorpora `csfx-idb-tap.js`, un shim que intercepta la store `orders` de IndexedDB para crear el respaldo `pending` incluso cuando el POS opera offline.
