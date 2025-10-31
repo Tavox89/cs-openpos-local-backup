@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.4 – Firma HMAC e integridad
+- Todos los respaldos (`pending` y confirmados) ahora incluyen una firma HMAC (HS256) generada a partir de las claves de WordPress; el visor y la API REST rechazan pedidos con firmas inválidas o alteradas.
+- El visor `csfx-cierre.html` valida la firma al abrir una carpeta y muestra la advertencia **“Archivo alterado”** cuando detecta manipulación o cuando la firma falta/no puede comprobarse.
+- Las descargas manuales desde el POS (botón “Exportar último…”) re-firman el documento en el momento para impedir que se exporten JSON sin integridad garantizada.
+- La clave HMAC queda persistida en `wp_options` (`csfx_lb_signature_secret_v1`), evitando variaciones por request; además, el visor permite re-firmar archivos directamente (si se conceden permisos de escritura) para compatibilizar respaldos generados antes de la actualización.
+- El botón **Re-firmar** también funciona cuando el navegador no ofrece WebCrypto: el visor consulta una firma nueva vía REST y reescribe el archivo automáticamente.
+
 ## 1.2.3 – Resync con creación de pedidos
 - El flujo **Re-sync** crea automáticamente el pedido en WooCommerce cuando no existe: replica ítems, totales, pagos/vueltos y las transacciones POS, agrega la nota “CSFX Local Backup: Pedido creado mediante resync automático.” y vuelve a ejecutar la verificación.
 - Mejoras en la comparación de pagos: soporte para campos `out_amount` / `return_amount` y mensajes detallados con montos/vueltos local vs WooCommerce.

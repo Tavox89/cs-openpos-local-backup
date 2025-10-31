@@ -155,6 +155,7 @@
   const $ = s=>document.querySelector(s);
   let folder=null;
   let orders=[];
+  const fileHandleMap = new Map();
   let currentDetailOrderId = null;
   const EMBED_CONTEXT = window.CSFX_LB_EMBED_CONTEXT || null;
   const REST_BASE = (EMBED_CONTEXT && EMBED_CONTEXT.restRoot) ? EMBED_CONTEXT.restRoot.replace(/\/$/,'') : `${window.location.origin}/wp-json/csfx-lb/v1`;
@@ -165,6 +166,129 @@
   };
   let restContextPromise = null;
   let verifyAllRunning = false;
+  const SIGNATURE_SECRET_PRIMARY = EMBED_CONTEXT && EMBED_CONTEXT.signature_secret ? EMBED_CONTEXT.signature_secret : '';
+  const SIGNATURE_SECRET_LEGACY = EMBED_CONTEXT && EMBED_CONTEXT.signature_secret_legacy ? EMBED_CONTEXT.signature_secret_legacy : '';
+  const SIGNATURE_SECRET_POOL_RAW = EMBED_CONTEXT && Array.isArray(EMBED_CONTEXT.signature_secret_pool)
+    ? EMBED_CONTEXT.signature_secret_pool
+    : [];
+  const SIGNATURE_SECRET_POOL = (() => {
+    const list = [];
+    if (SIGNATURE_SECRET_PRIMARY) list.push(SIGNATURE_SECRET_PRIMARY);
+    SIGNATURE_SECRET_POOL_RAW.forEach(value => {
+      if (typeof value === 'string' && value.length && !list.includes(value)) {
+        list.push(value);
+      }
+    });
+    if (SIGNATURE_SECRET_LEGACY && !list.includes(SIGNATURE_SECRET_LEGACY)) {
+      list.push(SIGNATURE_SECRET_LEGACY);
+    }
+    return list;
+  })();
+  const SIGNATURE_SECRET = SIGNATURE_SECRET_POOL.length ? SIGNATURE_SECRET_POOL[0] : SIGNATURE_SECRET_PRIMARY;
+  const WEB_CRYPTO_AVAILABLE = Boolean(window.crypto && window.crypto.subtle && typeof TextEncoder !== 'undefined');
+  const cryptoTextEncoder = WEB_CRYPTO_AVAILABLE ? new TextEncoder() : null;
+  const signatureKeyCache = new Map();
+  const hexFromBuffer = buffer => Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2,'0')).join('');
+
+  function timingSafeEqualHex(a,b){
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    if (a.length !== b.length) return false;
+    let result = 0;
+    for (let i=0;i<a.length;i++) {
+      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
+  }
+
+  function canonicalizeSignatureSource(value){
+    if (Array.isArray(value)) return value.map(canonicalizeSignatureSource);
+    if (value && typeof value === 'object') {
+      const out={};
+      const keys = Object.keys(value).filter(k => k !== 'signature').sort();
+      for (const key of keys){ out[key] = canonicalizeSignatureSource(value[key]); }
+      return out;
+    }
+    return value;
+  }
+
+  async function getViewerSignatureKey(secret, cacheKey){
+    if (!WEB_CRYPTO_AVAILABLE || !secret) return null;
+    if (signatureKeyCache.has(cacheKey)) {
+      return signatureKeyCache.get(cacheKey);
+    }
+    const promise = crypto.subtle.importKey(
+      'raw',
+      cryptoTextEncoder.encode(secret),
+      { name:'HMAC', hash:'SHA-256' },
+      false,
+      ['sign']
+    ).catch(()=>null);
+    signatureKeyCache.set(cacheKey, promise);
+    return promise;
+  }
+
+  async function verifyDocSignature(doc){
+    if (!doc || typeof doc !== 'object') return { status: 'missing' };
+    const sigNode = doc.signature;
+    const signature = sigNode && typeof sigNode === 'object' ? sigNode.value : sigNode;
+    if (!signature || typeof signature !== 'string') return { status: 'missing' };
+    if (!WEB_CRYPTO_AVAILABLE) return { status: 'unchecked' };
+
+    const pool = SIGNATURE_SECRET_POOL.length
+      ? SIGNATURE_SECRET_POOL
+      : (SIGNATURE_SECRET ? [SIGNATURE_SECRET] : []);
+    let canonical = null;
+    let canonicalJson = '';
+    const expectedMap = {};
+
+    for (let index = 0; index < pool.length; index++) {
+      const secret = pool[index];
+      const key = await getViewerSignatureKey(secret, `pool_${index}`);
+      if (!key) continue;
+      if (!canonical) {
+        canonical = canonicalizeSignatureSource(doc);
+        canonicalJson = JSON.stringify(canonical);
+      }
+      const sigBuffer = await crypto.subtle.sign('HMAC', key, cryptoTextEncoder.encode(canonicalJson));
+      const expected = hexFromBuffer(sigBuffer);
+      expectedMap[`secret_${index}`] = expected;
+      if (timingSafeEqualHex(expected, signature)) {
+        return { status: index === 0 ? 'valid' : 'valid_legacy', source: index === 0 ? 'primary' : `legacy_${index}` };
+      }
+    }
+
+    console.warn('[CSFX][Signature] mismatch', { provided: signature, expectedMap, canonicalJson });
+    return { status: 'invalid', canonicalJson, provided: signature, expected: expectedMap, pool: pool.length };
+  }
+
+  async function signDocSignature(doc){
+    const secret = SIGNATURE_SECRET_POOL.length ? SIGNATURE_SECRET_POOL[0] : SIGNATURE_SECRET;
+    if (!WEB_CRYPTO_AVAILABLE || !secret || !doc || typeof doc !== 'object') return null;
+    const key = await getViewerSignatureKey(secret, 'primary');
+    if (!key) return null;
+    const canonical = canonicalizeSignatureSource(doc);
+    const canonicalJson = JSON.stringify(canonical);
+    const sigBuffer = await crypto.subtle.sign('HMAC', key, cryptoTextEncoder.encode(canonicalJson));
+    const signature = hexFromBuffer(sigBuffer);
+    doc.signature = { value: signature, alg: 'HS256', ts: Date.now() };
+    return signature;
+  }
+
+  function signatureStatusLabel(status){
+    switch (status) {
+      case 'valid':
+        return 'Firma válida';
+      case 'invalid':
+        return 'Firma inválida';
+      case 'missing':
+        return WEB_CRYPTO_AVAILABLE ? 'Sin firma' : 'No disponible';
+      case 'unchecked':
+        return 'Sin validar (navegador)';
+      default:
+        return 'Desconocida';
+    }
+  }
+
   const VERIFICATION_LABELS = {
     pending: { label: 'Sin sinc.', pill: 'pending' },
     loading: { label: 'Verificando…', pill: 'loading' },
@@ -359,9 +483,11 @@
     return candidates[0] || 'Sin cliente';
   }
 
-  function normalizeOrder(doc){
+  function normalizeOrder(doc, signatureResult){
     const orderData = doc.orderData || {};
     const registerName = orderData.register?.name || doc.registerName || '—';
+    const signatureInfo = signatureResult || { status: WEB_CRYPTO_AVAILABLE ? 'missing' : 'unchecked' };
+    const signatureStatus = signatureInfo && signatureInfo.status ? signatureInfo.status : (WEB_CRYPTO_AVAILABLE ? 'missing' : 'unchecked');
     let cashier =
       orderData.user?.username ||
       orderData.user?.user_login ||
@@ -374,13 +500,6 @@
       doc.cart?.salesperson ||
       '';
     cashier = normalizeCashierName(cashier, registerName);
-    if (doc && typeof doc === 'object') {
-      if (doc.cashier !== cashier) doc.cashier = cashier;
-      if (doc.cart && typeof doc.cart === 'object') {
-        doc.cart.cashier = doc.cart.cashier || cashier;
-        doc.cart.salesperson = doc.cart.salesperson || cashier;
-      }
-    }
     const orderNumber = doc.orderNumber || orderData.order_number || orderData.order_number_format || (orderData.order_number_details && orderData.order_number_details.order_number) || doc.key;
     const orderId = doc.orderId || orderData.order_id || orderData.id || null;
     const rawTotals = doc.totals || orderData.totals || {};
@@ -477,9 +596,6 @@
     }) : '—';
 
     const status = (doc.status || orderData.status || 'pending').toString();
-    if (doc && typeof doc === 'object') {
-      doc.status = status;
-    }
     return {
       id: `${doc.ref || doc.key}`,
       fileName: doc.fileName,
@@ -502,6 +618,8 @@
       createdAtParts: doc.createdAtParts || {},
       totals: totalsData,
       docStatus: status,
+      signatureResult: signatureInfo,
+      signatureStatus,
       verification: null,
       verificationError: null,
       verificationLoading: false
@@ -520,14 +638,7 @@
       const info = byCashier.get(o.cashier);
       info.total += toAmount(o.total);
       info.count++;
-      let statusKey = 'pending';
-      if (o.verificationLoading) {
-        statusKey = 'loading';
-      } else if (o.verification && o.verification.status) {
-        statusKey = o.verification.status;
-      } else if (o.verificationError) {
-        statusKey = 'error';
-      }
+      const statusKey = getVerificationMeta(o).status || 'pending';
       byStatus.set(statusKey, (byStatus.get(statusKey) || 0) + 1);
       o.payments.forEach(p=>{
         const key = p.label || 'Pago';
@@ -576,14 +687,42 @@
     }
   }
 
+  function applySignatureMeta(meta, order){
+    if (!order) return meta;
+    const status = order.signatureStatus;
+    if (!status || status === 'valid') return meta;
+    const adjusted = { ...meta };
+    const warnings = Array.isArray(adjusted.warnings) ? [...adjusted.warnings] : [];
+    if (status === 'invalid') {
+      const warning = 'Firma HMAC inválida: el contenido no coincide con la firma almacenada.';
+      warnings.unshift(warning);
+      const canOverrideStatus = adjusted.status !== 'missing' && adjusted.status !== 'pending';
+      if (canOverrideStatus) {
+        adjusted.status = 'mismatch';
+        adjusted.pill = VERIFICATION_LABELS.mismatch.pill;
+        if (!adjusted.label || adjusted.label === VERIFICATION_LABELS.pending.label) {
+          adjusted.label = 'Archivo alterado';
+        }
+      }
+      if (!adjusted.message) adjusted.message = warning;
+      warnings.unshift('Puedes usar “Re-firmar” para regenerar la firma con la clave actual.');
+    } else if (status === 'missing') {
+      warnings.unshift('Sin firma HMAC (respaldo anterior o manipulado).');
+    } else if (status === 'unchecked') {
+      warnings.unshift('No se pudo validar la firma HMAC en este navegador.');
+    }
+    adjusted.warnings = warnings;
+    adjusted.signature = status;
+    return adjusted;
+  }
+
   function getVerificationMeta(order){
+    let meta;
     if (!order) {
-      return { status: 'pending', label: VERIFICATION_LABELS.pending.label, pill: VERIFICATION_LABELS.pending.pill, warnings: [], differences: [], message: '' };
-    }
-    if (order.verificationLoading) {
-      return { status: 'loading', label: VERIFICATION_LABELS.loading.label, pill: VERIFICATION_LABELS.loading.pill, warnings: [], differences: [], message: '' };
-    }
-    if (order.verification && order.verification.status) {
+      meta = { status: 'pending', label: VERIFICATION_LABELS.pending.label, pill: VERIFICATION_LABELS.pending.pill, warnings: [], differences: [], message: '' };
+    } else if (order.verificationLoading) {
+      meta = { status: 'loading', label: VERIFICATION_LABELS.loading.label, pill: VERIFICATION_LABELS.loading.pill, warnings: [], differences: [], message: '' };
+    } else if (order.verification && order.verification.status) {
       const base = VERIFICATION_LABELS[order.verification.status] || VERIFICATION_LABELS.pending;
       const warnings = Array.isArray(order.verification.warnings)
         ? order.verification.warnings.map(sanitizeDisplayText).filter(Boolean)
@@ -601,7 +740,7 @@
       if (order.verification.created_order) {
         warnings.push('Pedido creado automáticamente durante el resync.');
       }
-      return {
+      meta = {
         status: order.verification.status,
         label: base.label,
         pill: base.pill,
@@ -615,12 +754,13 @@
         resync: !!order.verification.resync,
         resyncNote: !!order.verification.resync_note
       };
-    }
-    if (order.verificationError) {
+    } else if (order.verificationError) {
       const message = sanitizeDisplayText(order.verificationError) || 'Error de verificación';
-      return { status: 'error', label: VERIFICATION_LABELS.error.label, pill: VERIFICATION_LABELS.error.pill, warnings: [], differences: [], message };
+      meta = { status: 'error', label: VERIFICATION_LABELS.error.label, pill: VERIFICATION_LABELS.error.pill, warnings: [], differences: [], message };
+    } else {
+      meta = { status: 'pending', label: VERIFICATION_LABELS.pending.label, pill: VERIFICATION_LABELS.pending.pill, warnings: [], differences: [], message: '' };
     }
-    return { status: 'pending', label: VERIFICATION_LABELS.pending.label, pill: VERIFICATION_LABELS.pending.pill, warnings: [], differences: [], message: '' };
+    return applySignatureMeta(meta, order);
   }
 
   function renderNoteList(list, cssClass = 'status-notes'){
@@ -648,27 +788,54 @@
     if (order && order.verification && order.verification.resync_note) {
       pieces.push('<div class="status-block muted">Resync registrado en WooCommerce</div>');
     }
-    if (meta.adminUrl) {
-      pieces.push(`<div class="status-block"><a href="${meta.adminUrl}" target="_blank" rel="noopener">Abrir en WooCommerce</a></div>`);
+  if (meta.adminUrl) {
+    pieces.push(`<div class="status-block"><a href="${meta.adminUrl}" target="_blank" rel="noopener">Abrir en WooCommerce</a></div>`);
+  }
+  return pieces.join('');
+}
+
+  async function ensureValidSignatureForOrder(order){
+    if (!order) return;
+    const status = order.signatureStatus;
+    if (!status || status === 'valid' || status === 'unchecked') return;
+    const payloadSource = order.sourceDoc || order.doc || null;
+    if (!payloadSource) return;
+    try {
+      const normalized = JSON.parse(JSON.stringify(payloadSource));
+      const server = await requestServerSignature(normalized);
+      if (server && server.doc && server.signature) {
+        order.doc = server.doc;
+        order.sourceDoc = server.doc;
+        order.signatureResult = { status: 'valid', source: 'server' };
+        order.signatureStatus = 'valid';
+      }
+    } catch (err) {
+      console.warn('[CSFX][Signature] no se pudo regenerar firma previa', order.orderNumber || order.fileName, err);
     }
-    return pieces.join('');
   }
 
   async function performVerification(order, mode = 'verify'){
     if (!order || order.verificationLoading) return;
+
+    await ensureValidSignatureForOrder(order);
+
     order.verificationLoading = true;
     order.verificationError = null;
     renderGroups();
+
     try {
       const data = await requestVerification(order, mode);
+      if (data && data.signature && data.signature !== 'valid') {
+        console.warn('[CSFX][Signature][REST]', order.orderNumber || order.fileName, data.signature, data);
+      }
       order.verification = data;
       order.verification.created_order = !!data.created_order;
       order.verificationError = null;
       if (data && (data.status === 'verified' || data.status === 'verified_with_warnings')) {
         order.status = 'verificado';
-        if (order.doc && typeof order.doc === 'object') {
-          order.doc.status = 'verificado';
-        }
+      }
+      if (data && data.signature) {
+        order.signatureStatus = data.signature === 'valid_legacy' ? 'valid' : data.signature;
       }
     } catch (err) {
       console.warn('[CSFX][Verify] fallo', mode, order.orderNumber, err);
@@ -686,15 +853,103 @@
     }
   }
 
+  async function refirmOrder(order){
+    if (!order || !order.doc) {
+      throw new Error('Pedido sin documento cargado.');
+    }
+    if (!folder) {
+      throw new Error('Selecciona primero la carpeta del día.');
+    }
+    const fileName = order.fileName || order.pendingFileName;
+    if (!fileName) {
+      throw new Error('No se pudo determinar el nombre del archivo.');
+    }
+    let handle = fileHandleMap.get(fileName);
+    if (!handle && typeof folder.getFileHandle === 'function') {
+      try {
+        handle = await folder.getFileHandle(fileName, { create: false });
+        if (handle) {
+          fileHandleMap.set(fileName, handle);
+        }
+      } catch (err) {
+        throw new Error('No se encontró el archivo en la carpeta seleccionada.');
+      }
+    }
+    if (!handle) {
+      throw new Error('No se pudo obtener el handle del archivo.');
+    }
+    if (typeof handle.requestPermission === 'function') {
+      const permission = await handle.requestPermission({ mode: 'readwrite' });
+      if (permission !== 'granted') {
+        throw new Error('Permiso de escritura denegado.');
+      }
+    }
+
+    const originalDoc = order.sourceDoc || order.doc;
+    const updatedDocLocal = originalDoc ? JSON.parse(JSON.stringify(originalDoc)) : null;
+    let updatedDoc = updatedDocLocal || {};
+    let serverRefirm = null;
+
+    if (WEB_CRYPTO_AVAILABLE && SIGNATURE_SECRET && updatedDocLocal) {
+      await signDocSignature(updatedDoc);
+      order.signatureResult = await verifyDocSignature(updatedDoc);
+      order.signatureStatus = order.signatureResult.status;
+      try {
+        serverRefirm = await requestServerSignature(JSON.parse(JSON.stringify(updatedDoc)));
+      } catch (err) {
+        console.warn('[CSFX][Signature][ReFirm] no se pudo contrastar con el servidor', err);
+        if (order.signatureStatus !== 'valid') {
+          throw err;
+        }
+      }
+
+      if (serverRefirm && serverRefirm.signature && serverRefirm.doc) {
+        const localSigNode = updatedDoc?.signature;
+        const localSig = localSigNode && typeof localSigNode === 'object' ? localSigNode.value : localSigNode;
+        if (!timingSafeEqualHex(serverRefirm.signature, localSig || '')) {
+          console.warn('[CSFX][Signature][ReFirm] mismatch entre firma local y servidor; usando firma del servidor.', {
+            local: localSig,
+            server: serverRefirm.signature
+          });
+          updatedDoc = serverRefirm.doc;
+          order.signatureResult = { status: 'valid', source: 'server' };
+          order.signatureStatus = 'valid';
+        }
+      }
+    } else {
+      const server = await requestServerSignature(updatedDocLocal || JSON.parse(JSON.stringify(order.doc)));
+      if (!server || !server.signature || !server.doc) {
+        throw new Error('Respuesta inválida al regenerar la firma.');
+      }
+      updatedDoc = server.doc;
+      order.signatureResult = { status: 'valid', source: 'server' };
+      order.signatureStatus = 'valid';
+    }
+
+    const writable = await handle.createWritable();
+    await writable.write(JSON.stringify(updatedDoc, null, 2));
+    await writable.close();
+    order.doc = updatedDoc;
+    order.sourceDoc = updatedDoc;
+    renderGroups();
+    buildSummary();
+    if (currentDetailOrderId === order.id) {
+      fillDetail(order);
+    }
+    alertFriendly(null, 'Firma actualizada correctamente.');
+  }
+
   async function requestVerification(order, mode = 'verify'){
     if (!order) throw new Error('Pedido no disponible');
     await ensureRestContext();
     const endpoint = mode === 'resync' ? 'resync-order' : 'verify-order';
     const url = `${REST_BASE}/${endpoint}`;
+    const sourceDoc = order.sourceDoc || order.doc || null;
+    const docPayload = sourceDoc ? JSON.parse(JSON.stringify(sourceDoc)) : null;
     const payload = {
-      orderNumber: order.orderNumber || order.doc?.orderNumber || null,
-      orderId: order.orderId || order.doc?.orderId || null,
-      doc: order.doc || null,
+      orderNumber: order.orderNumber || order.sourceDoc?.orderNumber || order.doc?.orderNumber || null,
+      orderId: order.orderId || order.sourceDoc?.orderId || order.doc?.orderId || null,
+      doc: docPayload,
       addNote: true
     };
 
@@ -727,6 +982,47 @@
 
     if (!response.ok) {
       const message = data && data.message ? data.message : 'Error de verificación';
+      throw new Error(message);
+    }
+
+    return data;
+  }
+
+  async function requestServerSignature(doc){
+    await ensureRestContext();
+    const endpoint = 'signature';
+    const url = `${REST_BASE}/${endpoint}`;
+    const payload = { doc };
+
+    const send = async (nonce) => {
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+      if (nonce) headers['X-WP-Nonce'] = nonce;
+      return fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify(payload)
+      });
+    };
+
+    let response = await send(restContext.nonce);
+    if (response.status === 401) {
+      restContext.nonce = null;
+      await ensureRestContext(true);
+      response = await send(restContext.nonce);
+    }
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (err) {
+      data = {};
+    }
+
+    if (!response.ok) {
+      const message = data && data.message ? data.message : 'No se pudo regenerar la firma.';
       throw new Error(message);
     }
 
@@ -805,6 +1101,9 @@
         const resyncBtnDisabledAttr = verifyDisabled ? 'disabled' : '';
         const resyncButton = resyncNeeded ? `<button class="action-btn btn-verify action-resync" data-id="${o.id}" data-action="resync" ${resyncBtnDisabledAttr}>${o.verificationLoading ? 'Resync…' : 'Re-sync'}</button>` : '';
         const adminButton = (o.verification && o.verification.adminUrl) ? `<button class="action-btn btn-view action-admin" data-id="${o.id}" data-action="open-order">Woo</button>` : '';
+        const needsRefirm = o.signatureStatus && o.signatureStatus !== 'valid';
+        const refirmDisabledAttr = verifyDisabled ? 'disabled' : '';
+        const refirmButton = needsRefirm ? `<button class="action-btn btn-verify action-refirm" data-id="${o.id}" data-action="refirm" ${refirmDisabledAttr}>Re-firmar</button>` : '';
         tr.innerHTML = `
           <td>${safe(o.orderNumber)}</td>
           <td>${safe(o.customerName)}</td>
@@ -816,6 +1115,7 @@
             <button class="action-btn btn-view" data-id="${o.id}" data-action="detail">Detalle</button>
             <button class="action-btn btn-verify action-verify" data-id="${o.id}" data-action="verify" ${verifyBtnDisabledAttr}>${verifyBtnLabel}</button>
             ${resyncButton}
+            ${refirmButton}
             ${adminButton}
           </td>`;
         tbody.appendChild(tr);
@@ -890,6 +1190,7 @@
       ['Descuento general', order.discountDisplay || fmtMoney(order.discountAmount)],
       ['Status verificación', getVerificationMeta(order).label || 'Sin sinc.'],
       ['Status POS', order.docStatus || '—'],
+      ['Firma HMAC', signatureStatusLabel(order.signatureStatus)],
       ['Nota', order.orderData?.note || '—'],
       ['Archivo', order.fileName || '—']
     ];
@@ -1003,6 +1304,14 @@
       }
       return;
     }
+    if(action === 'refirm') {
+      try {
+        await refirmOrder(order);
+      } catch (err) {
+        alertFriendly(err, 'No se pudo actualizar la firma del archivo.');
+      }
+      return;
+    }
     if(action === 'open-order') {
       if (order.verification && order.verification.adminUrl) {
         window.open(order.verification.adminUrl, '_blank', 'noopener');
@@ -1038,18 +1347,53 @@
       return;
     }
     try{
-      folder = await showDirectoryPicker({mode:'read'});
+      folder = await showDirectoryPicker({mode:'readwrite'});
       $('#info').textContent = 'Carpeta: ' + (folder.name || '(día)');
       orders=[];
       verifyAllRunning = false;
+      fileHandleMap.clear();
 
       for await (const entry of folder.values()){
         if(entry.kind!=='file' || !entry.name.endsWith('.json')) continue;
+        fileHandleMap.set(entry.name, entry);
         const file=await entry.getFile();
         const txt=await file.text();
-        let doc=null; try{doc=JSON.parse(txt);}catch{continue;}
+        let docOriginal=null; try{docOriginal=JSON.parse(txt);}catch{continue;}
+        let signatureResult={ status: WEB_CRYPTO_AVAILABLE ? 'missing' : 'unchecked' };
+        try {
+          signatureResult = await verifyDocSignature(docOriginal);
+          if (signatureResult && signatureResult.status && signatureResult.status !== 'valid') {
+            console.warn('[CSFX][Signature][Folder]', entry.name, signatureResult);
+            if (WEB_CRYPTO_AVAILABLE && requestServerSignature) {
+              try {
+                const refreshed = await requestServerSignature(JSON.parse(JSON.stringify(docOriginal)));
+                if (refreshed && refreshed.doc && refreshed.signature) {
+                  docOriginal = refreshed.doc;
+                  signatureResult = { status: 'valid', source: 'server' };
+                  try {
+                    const writable = await entry.createWritable();
+                    await writable.write(JSON.stringify(docOriginal, null, 2));
+                    await writable.close();
+                  } catch (err) {
+                    console.warn('[CSFX][Folder] no se pudo actualizar archivo firmado', entry.name, err);
+                  }
+                }
+              } catch (err) {
+                console.warn('[CSFX][Signature][Folder] no se pudo regenerar', entry.name, err);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[CSFX][Verify] No se pudo validar firma', entry.name, err);
+        }
+        const docForUi = JSON.parse(JSON.stringify(docOriginal));
+        const fallbackFileName = (docOriginal && typeof docOriginal === 'object' && docOriginal.fileName) ? docOriginal.fileName : entry.name;
         try{
-          const order = normalizeOrder(doc);
+          const order = normalizeOrder(docForUi, signatureResult);
+          if (!order.fileName) order.fileName = fallbackFileName;
+          if (!order.pendingFileName) order.pendingFileName = fallbackFileName;
+          order.doc = docOriginal;
+          order.sourceDoc = docOriginal;
           orders.push(order);
         }catch(err){
           console.warn('No se pudo normalizar archivo', entry.name, err);
@@ -1073,10 +1417,7 @@
     setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove()}, 600);
   };
   $('#print').onclick = ()=>window.print();
-})();
-</script>
-</body>
-</html>
+
   const verifyAllButton = $('#verify-all');
   if (verifyAllButton) {
     verifyAllButton.addEventListener('click', async ()=>{
@@ -1103,3 +1444,7 @@
       }
     });
   }
+})();
+</script>
+</body>
+</html>

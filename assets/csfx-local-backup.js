@@ -29,9 +29,84 @@
   const WRITE_PENDING_MODE = typeof SETTINGS.write_pending_fs === 'string' ? SETTINGS.write_pending_fs : 'always';
   const PRUNE_EVERY = Number.isFinite(Number(SETTINGS.prune_every_n_puts)) ? Math.max(1, Number(SETTINGS.prune_every_n_puts)) : 50;
   const EVENT_DEBOUNCE_MS = Number.isFinite(Number(SETTINGS.debounce_ms)) ? Math.max(0, Number(SETTINGS.debounce_ms)) : 180;
+  const REST_ROOT = typeof SETTINGS.rest_root === 'string' ? SETTINGS.rest_root : '';
+  const REST_NONCE = typeof SETTINGS.rest_nonce === 'string' ? SETTINGS.rest_nonce : '';
+  const SIGNATURE_SECRET_PRIMARY = typeof SETTINGS.signature_secret === 'string' ? SETTINGS.signature_secret : '';
+  const SIGNATURE_SECRET_LEGACY_SETTING = typeof SETTINGS.signature_secret_legacy === 'string' ? SETTINGS.signature_secret_legacy : '';
+  const SIGNATURE_SECRET_POOL_RAW = Array.isArray(SETTINGS.signature_secret_pool) ? SETTINGS.signature_secret_pool : [];
+  const sanitizeSecret = value => (typeof value === 'string' && value.length >= 8 ? value : '');
+  let signatureSecretPool = (() => {
+    const pool = [];
+    const push = secret => {
+      const clean = sanitizeSecret(secret);
+      if (clean && !pool.includes(clean)) {
+        pool.push(clean);
+      }
+    };
+    push(SIGNATURE_SECRET_PRIMARY);
+    SIGNATURE_SECRET_POOL_RAW.forEach(push);
+    push(SIGNATURE_SECRET_LEGACY_SETTING);
+    return pool;
+  })();
+  const WEB_CRYPTO_READY = Boolean(window.crypto && window.crypto.subtle && typeof TextEncoder !== 'undefined');
+  const textEncoder = WEB_CRYPTO_READY ? new TextEncoder() : null;
+  const signatureKeyCache = new Map();
   const thinEventTimers = new Map();
   let putsSincePrune = 0;
   let FOLDER_GRANTED = false;
+
+  const getSignatureSecretPool = () => signatureSecretPool.slice();
+  const getActiveSignatureSecret = () => (signatureSecretPool.length ? signatureSecretPool[0] : sanitizeSecret(SIGNATURE_SECRET_PRIMARY));
+  const signatureAvailable = () => Boolean(getActiveSignatureSecret() && WEB_CRYPTO_READY);
+
+  function setSignatureSecretPool(newPool) {
+    if (!Array.isArray(newPool)) return;
+    const clean = [];
+    newPool.forEach(secret => {
+      const normalized = sanitizeSecret(secret);
+      if (normalized && !clean.includes(normalized)) {
+        clean.push(normalized);
+      }
+    });
+    if (!clean.length) return;
+    const sameLength = clean.length === signatureSecretPool.length;
+    const sameOrder = sameLength && clean.every((value, idx) => value === signatureSecretPool[idx]);
+    if (sameOrder) return;
+    signatureSecretPool = clean;
+    signatureKeyCache.clear();
+    if (isDebug()) log('Signature pool actualizado', { size: clean.length });
+  }
+
+  async function syncSignatureSecretPool() {
+    if (!REST_ROOT) return;
+    const url = `${REST_ROOT.replace(/\/$/, '')}/context`;
+    try {
+      const headers = REST_NONCE ? { 'X-WP-Nonce': REST_NONCE } : {};
+      const res = await fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        headers
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data) return;
+      if (Array.isArray(data.signature_secret_pool) && data.signature_secret_pool.length) {
+        setSignatureSecretPool(data.signature_secret_pool);
+      } else if (data.signature_secret) {
+        const pool = [data.signature_secret];
+        if (Array.isArray(data.signature_secret_pool)) {
+          data.signature_secret_pool.forEach(secret => pool.push(secret));
+        } else if (data.signature_secret_legacy) {
+          pool.push(data.signature_secret_legacy);
+        }
+        setSignatureSecretPool(pool);
+      }
+    } catch (err) {
+      if (isDebug()) console.warn('[CSFX] No se pudo sincronizar secretos de firma', err);
+    }
+  }
+
+  syncSignatureSecretPool();
 
   function normalizePaymentsCollection(payments) {
     const result = [];
@@ -96,6 +171,162 @@
 
     push(payments);
     return result.filter(item => item && typeof item === 'object' && item.code);
+  }
+
+  const hexFromBuffer = buffer => Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  function timingSafeEqualHex(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) {
+      diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return diff === 0;
+  }
+
+  function canonicalizeForSignature(value) {
+    if (Array.isArray(value)) {
+      return value.map(canonicalizeForSignature);
+    }
+    if (value && typeof value === 'object') {
+      const result = {};
+      const keys = Object.keys(value).filter(key => key !== 'signature').sort();
+      for (const key of keys) {
+        result[key] = canonicalizeForSignature(value[key]);
+      }
+      return result;
+    }
+    return value;
+  }
+
+  async function getSignatureKey(secret = getActiveSignatureSecret()) {
+    if (!WEB_CRYPTO_READY || !secret) return null;
+    if (signatureKeyCache.has(secret)) {
+      return signatureKeyCache.get(secret);
+    }
+    const promise = crypto.subtle.importKey(
+      'raw',
+      textEncoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    ).catch(err => {
+      console.warn('[CSFX] No se pudo importar clave de firma', err);
+      return null;
+    });
+    signatureKeyCache.set(secret, promise);
+    return promise;
+  }
+
+  function cloneForSignaturePayload(doc) {
+    try {
+      const clone = JSON.parse(JSON.stringify(doc));
+      if (clone && typeof clone === 'object') {
+        delete clone.signature;
+      }
+      return clone;
+    } catch {
+      return null;
+    }
+  }
+
+  async function requestServerSignature(doc) {
+    if (!REST_ROOT) return null;
+    const payloadDoc = cloneForSignaturePayload(doc);
+    if (!payloadDoc) return null;
+    const url = `${REST_ROOT.replace(/\/$/, '')}/signature`;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(REST_NONCE ? { 'X-WP-Nonce': REST_NONCE } : {})
+        },
+        body: JSON.stringify({ doc: payloadDoc })
+      });
+      if (!res.ok) {
+        return null;
+      }
+      return await res.json();
+    } catch (err) {
+      if (isDebug()) console.warn('[CSFX] requestServerSignature error', err);
+      return null;
+    }
+  }
+
+  async function applyDocumentSignature(doc) {
+    if (!doc || typeof doc !== 'object') return null;
+
+    let signature = null;
+    let alg = 'HS256';
+    let ts = Date.now();
+
+    if (signatureAvailable()) {
+      const key = await getSignatureKey();
+      if (key) {
+        const canonical = canonicalizeForSignature(doc);
+        const canonicalJson = JSON.stringify(canonical);
+        const sigBuffer = await crypto.subtle.sign('HMAC', key, textEncoder.encode(canonicalJson));
+        signature = hexFromBuffer(sigBuffer);
+      }
+    }
+
+    const server = await requestServerSignature(doc);
+    if (server && server.signature) {
+      signature = server.signature;
+      ts = Date.now();
+      if (server.doc && typeof server.doc === 'object') {
+        try {
+          if (server.doc.signature && typeof server.doc.signature === 'object') {
+            alg = server.doc.signature.alg || alg;
+            ts = server.doc.signature.ts || ts;
+          }
+        } catch (err) {}
+      }
+    }
+
+    if (!signature) return null;
+    doc.signature = { value: signature, alg, ts };
+    return signature;
+  }
+
+  async function verifyDocumentSignature(doc) {
+    if (!WEB_CRYPTO_READY || !doc || typeof doc !== 'object') {
+      return { status: WEB_CRYPTO_READY ? 'missing' : 'unchecked' };
+    }
+    const sigNode = doc.signature;
+    const sigValue = sigNode && typeof sigNode === 'object' ? sigNode.value : sigNode;
+    if (!sigValue || typeof sigValue !== 'string') {
+      return { status: 'missing' };
+    }
+    const pool = signatureSecretPool.length
+      ? signatureSecretPool
+      : (sanitizeSecret(SIGNATURE_SECRET_PRIMARY) ? [sanitizeSecret(SIGNATURE_SECRET_PRIMARY)] : []);
+    const secrets = pool.length ? pool : getSignatureSecretPool();
+    if (!secrets.length) {
+      return { status: 'missing' };
+    }
+    let canonical = null;
+    let canonicalJson = '';
+    for (let i = 0; i < secrets.length; i++) {
+      const secret = secrets[i];
+      const key = await getSignatureKey(secret);
+      if (!key) {
+        continue;
+      }
+      if (!canonical) {
+        canonical = canonicalizeForSignature(doc);
+        canonicalJson = JSON.stringify(canonical);
+      }
+      const sigBuffer = await crypto.subtle.sign('HMAC', key, textEncoder.encode(canonicalJson));
+      const expected = hexFromBuffer(sigBuffer);
+      if (timingSafeEqualHex(expected, sigValue)) {
+        return { status: i === 0 ? 'valid' : 'valid_legacy', source: i === 0 ? 'primary' : `legacy_${i}` };
+      }
+    }
+    return { status: 'invalid' };
   }
 
   function cloneLight(value) {
@@ -678,6 +909,7 @@
         thin: true
       };
       updated.version = '1.2.0';
+      await applyDocumentSignature(updated);
       await putOrder(updated);
       updateExportButton(updated);
       window.CSFX_LAST_DOC = updated;
@@ -735,6 +967,7 @@
       eventSession: payload.session ?? null,
       deviceRef: dev || null
     };
+    await applyDocumentSignature(doc);
     await putOrder(doc);
     updateExportButton(doc);
     window.CSFX_LAST_DOC = doc;
@@ -1714,6 +1947,7 @@
     const fileName = pending ? (doc.pendingFileName || doc.fileName) : doc.fileName;
     if (!fileName) return false;
     const folderName = doc.dayFolder || dayFolderFromParts(doc.createdAtParts);
+    await applyDocumentSignature(doc);
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
 
     const hasRoot = await ensureRoot(false);
@@ -2345,12 +2579,17 @@
       showGuardOverlay();
     }
 
-    exportBtn.addEventListener('click', () => {
+    exportBtn.addEventListener('click', async () => {
       log('Click exportar último', !!window.CSFX_LAST_DOC);
       const doc = window.CSFX_LAST_DOC;
       if (!doc) {
         console.warn('[CSFX] No hay respaldo reciente para exportar.');
         return;
+      }
+      try {
+        await applyDocumentSignature(doc);
+      } catch (err) {
+        log('No se pudo firmar el documento antes de exportar', err);
       }
       const parts = doc.createdAtParts || nowParts();
       const name = `${parts.H}-${parts.M}-${parts.S}_${doc.orderNumber || doc.orderId || 'orden'}.json`;

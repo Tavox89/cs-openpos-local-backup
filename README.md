@@ -5,6 +5,13 @@ Respaldo local (offline/online) de órdenes de OpenPOS:
 - **Índice:** IndexedDB (`csfx-orders/orders`) mantiene el catálogo local para búsquedas rápidas.
 - **Fallback:** descarga automática del `.json` cuando el navegador no expone File System Access.
 
+## Novedades 1.2.4 – Firma HMAC y visor seguro
+- Cada respaldo `.json` incorpora una firma HMAC (HS256) generada con las *WP salts* del sitio: el POS la añade al guardar y tanto el visor como los endpoints REST la validan antes de procesar la orden.
+- El visor marca como **“Archivo alterado”** cualquier documento con firma inválida y advierte cuando la firma falta o no pudo validarse (navegador sin WebCrypto).
+- Las descargas manuales (botón “Exportar último…”) re-firman el documento en el momento para impedir que se exporten copias sin integridad comprobada.
+- La clave HMAC se persiste en WordPress (`csfx_lb_signature_secret_v1`), evitando falsos positivos cuando el sitio rota las *salts* o está en modo local; si un respaldo antiguo trae firma inválida puedes pulsar **Re-firmar** en el visor (requiere permisos de escritura en la carpeta) para actualizarla.
+- El botón **Re-firmar** funciona incluso en navegadores sin `crypto.subtle`: el visor solicita la firma al backend y reescribe el archivo automáticamente cuando se concede acceso de escritura a la carpeta.
+
 ## Novedades 1.2.0
 - El plugin captura el pedido al recibir el evento `openpos.start.payment`, guardando un respaldo inmediatamente incluso cuando el POS está en modo offline.
 - Se intercepta la escritura en la store `orders` de IndexedDB mediante `csfx-idb-tap.js`, creando el respaldo `pending` en cuanto OpenPOS guarda la venta offline.
@@ -64,6 +71,7 @@ Respaldo local (offline/online) de órdenes de OpenPOS:
   - **Con diferencias** (totales, productos o pagos no coinciden)
   - **Pedido no encontrado** (habilita el botón Re-sync)
   - **Error de verificación** (problemas de red o permisos)
+- Antes de iniciar la comparación, el visor valida la firma HMAC del respaldo: si falta o no coincide, la orden aparece como “Archivo alterado” y se listan las advertencias correspondientes.
 - Las advertencias y diferencias listadas muestran qué campo no coincidió (totales, métodos de pago, ítems duplicados, etc.) y se incluyen en la exportación CSV como columna `Status`.
 - El botón **Woo** abre el pedido en el admin para una revisión manual. Si el re-sync encuentra o crea la orden, se añaden las notas “CSFX Local Backup: Pedido creado mediante resync automático.” y “CSFX Local Backup: Resync ejecutado desde el visor de cierre”.
 - Si no tienes sesión o permisos suficientes, el visor avisa y no ejecuta la verificación hasta que accedas con un usuario que tenga `manage_woocommerce`.

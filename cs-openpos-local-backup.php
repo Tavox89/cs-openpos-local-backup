@@ -12,6 +12,156 @@ define('CSFX_LB_VERSION', '1.2.0');
 define('CSFX_LB_URL', plugin_dir_url(__FILE__));
 define('CSFX_LB_PATH', plugin_dir_path(__FILE__));
 
+function csfx_lb_signature_secret() {
+  static $secret = null;
+  if (null !== $secret) {
+    return $secret;
+  }
+
+  $stored = get_option('csfx_lb_signature_secret_v1');
+  if (is_string($stored) && strlen($stored) >= 32) {
+    $secret = $stored;
+    return $secret;
+  }
+
+  $candidates = array(
+    'AUTH_KEY',
+    'SECURE_AUTH_KEY',
+    'LOGGED_IN_KEY',
+    'NONCE_KEY',
+    'AUTH_SALT',
+    'SECURE_AUTH_SALT',
+    'LOGGED_IN_SALT',
+    'NONCE_SALT',
+  );
+
+  $parts = array();
+  foreach ($candidates as $const) {
+    if (defined($const)) {
+      $value = constant($const);
+      if (is_string($value) && $value !== '') {
+        $parts[] = $value;
+      }
+    }
+  }
+
+  if (empty($parts)) {
+    $parts[] = (string) get_option('siteurl', '');
+    $parts[] = (string) get_option('home', '');
+    $parts[] = (string) get_current_blog_id();
+  }
+
+  $raw = implode('|', array_filter(array_unique($parts)));
+  if ($raw === '') {
+    $raw = wp_generate_password(64, true, true);
+  }
+
+  $secret = hash('sha256', $raw);
+  update_option('csfx_lb_signature_secret_v1', $secret, false);
+
+  $legacy_option = get_option('csfx_lb_signature_secret_legacy_v1');
+  if (empty($legacy_option)) {
+    update_option('csfx_lb_signature_secret_legacy_v1', array($secret), false);
+  } elseif (is_string($legacy_option) && strlen($legacy_option) >= 32) {
+    update_option('csfx_lb_signature_secret_legacy_v1', array_unique(array($legacy_option, $secret)), false);
+  } elseif (is_array($legacy_option)) {
+    $legacy_option[] = $secret;
+    update_option('csfx_lb_signature_secret_legacy_v1', array_values(array_unique($legacy_option)), false);
+  }
+
+  return $secret;
+}
+
+function csfx_lb_signature_secret_legacy() {
+  static $legacy = null;
+  if (null !== $legacy) {
+    return $legacy;
+  }
+
+  $candidates = csfx_lb_signature_secret_candidates();
+  foreach ($candidates as $key => $candidate) {
+    if ($key === 'primary') {
+      continue;
+    }
+    $legacy = $candidate;
+    return $legacy;
+  }
+
+  $legacy = '';
+  return $legacy;
+}
+
+function csfx_lb_signature_secret_candidates() {
+  static $cached = null;
+  if ($cached !== null) {
+    return $cached;
+  }
+
+  $candidates = array();
+  $primary    = csfx_lb_signature_secret();
+  if (is_string($primary) && strlen($primary) >= 32) {
+    $candidates['primary'] = $primary;
+  }
+
+  $stored_legacy = get_option('csfx_lb_signature_secret_legacy_v1');
+  if (is_string($stored_legacy) && strlen($stored_legacy) >= 32) {
+    $candidates['legacy_stored'] = $stored_legacy;
+  } elseif (is_array($stored_legacy)) {
+    foreach ($stored_legacy as $index => $value) {
+      if (is_string($value) && strlen($value) >= 32) {
+        $candidates['legacy_' . $index] = $value;
+      }
+    }
+  }
+
+  $fallback = csfx_lb_signature_secret_fallback();
+  if (is_string($fallback) && strlen($fallback) >= 32) {
+    $candidates['fallback'] = $fallback;
+  }
+
+  $candidates = apply_filters('csfx_lb_signature_secret_candidates', $candidates);
+
+  $unique = array();
+  foreach ($candidates as $key => $value) {
+    if (!is_string($value) || strlen($value) < 32) {
+      continue;
+    }
+    if (in_array($value, $unique, true)) {
+      continue;
+    }
+    $unique[$key] = $value;
+  }
+
+  $cached = $unique;
+  return $cached;
+}
+
+function csfx_lb_signature_secret_fallback() {
+  $parts = array(
+    defined('AUTH_KEY') ? AUTH_KEY : '',
+    defined('SECURE_AUTH_KEY') ? SECURE_AUTH_KEY : '',
+    defined('NONCE_SALT') ? NONCE_SALT : '',
+    defined('LOGGED_IN_SALT') ? LOGGED_IN_SALT : '',
+  );
+
+  if (function_exists('wp_salt')) {
+    $parts[] = wp_salt();
+  }
+
+  if (empty(array_filter($parts))) {
+    $parts[] = (string) get_option('siteurl', '');
+    $parts[] = (string) get_option('home', '');
+    $parts[] = (string) get_current_blog_id();
+  }
+
+  $raw = implode('|', array_filter(array_unique(array_map('strval', $parts))));
+  if ($raw === '') {
+    $raw = 'csfx-lb-fallback:' . site_url('/');
+  }
+
+  return hash('sha256', $raw);
+}
+
 /**
  * Determina si la URL actual corresponde al POS de OpenPOS.
  */
@@ -125,6 +275,11 @@ function csfx_lb_enqueue_assets() {
         'staff_login' => $staff_login,
         'staff_display' => $staff_display,
         'staff_email' => $staff_email,
+        'signature_secret' => csfx_lb_signature_secret(),
+        'signature_secret_legacy' => csfx_lb_signature_secret_legacy(),
+        'signature_secret_pool' => array_values( csfx_lb_signature_secret_candidates() ),
+        'rest_root' => esc_url_raw( rest_url( 'csfx-lb/v1' ) ),
+        'rest_nonce' => wp_create_nonce( 'wp_rest' ),
       )
     );
     $localized = true;
@@ -299,6 +454,9 @@ function csfx_lb_stream_cierre_viewer(){
     ),
     'restRoot' => esc_url_raw(rest_url('csfx-lb/v1')),
     'siteUrl'  => esc_url_raw(site_url()),
+    'signature_secret' => csfx_lb_signature_secret(),
+    'signature_secret_legacy' => csfx_lb_signature_secret_legacy(),
+    'signature_secret_pool' => array_values( csfx_lb_signature_secret_candidates() ),
   );
 
   $bootstrap = '<script>window.CSFX_LB_EMBED_CONTEXT = ' . wp_json_encode($context) . ';</script>';
@@ -339,6 +497,16 @@ function csfx_lb_register_rest_routes(){
       'callback'            => 'csfx_lb_rest_resync_order'
     )
   );
+
+  register_rest_route(
+    'csfx-lb/v1',
+    '/signature',
+    array(
+      'methods'             => WP_REST_Server::CREATABLE,
+      'permission_callback' => 'csfx_lb_rest_permission',
+      'callback'            => 'csfx_lb_rest_signature'
+    )
+  );
 }
 
 function csfx_lb_rest_permission(){
@@ -354,7 +522,10 @@ function csfx_lb_rest_context(){
       'login'   => $user ? $user->user_login : '',
       'display' => $user ? $user->display_name : '',
       'email'   => $user ? $user->user_email : ''
-    )
+    ),
+    'signature_secret' => csfx_lb_signature_secret(),
+    'signature_secret_legacy' => csfx_lb_signature_secret_legacy(),
+    'signature_secret_pool' => array_values( csfx_lb_signature_secret_candidates() ),
   ));
 }
 
@@ -364,6 +535,30 @@ function csfx_lb_rest_verify_order( WP_REST_Request $request ){
 
 function csfx_lb_rest_resync_order( WP_REST_Request $request ){
   return csfx_lb_handle_verify_request( $request, 'resync' );
+}
+
+function csfx_lb_rest_signature( WP_REST_Request $request ){
+  $payload = $request->get_json_params();
+  if ( ! is_array( $payload ) || empty( $payload['doc'] ) || ! is_array( $payload['doc'] ) ) {
+    return new WP_Error( 'csfx_lb_invalid_body', 'Documento inválido.', array( 'status' => 400 ) );
+  }
+
+  $doc = $payload['doc'];
+  if ( isset( $doc['signature'] ) ) {
+    unset( $doc['signature'] );
+  }
+
+  $signature_value = csfx_lb_calculate_doc_signature( $doc );
+  $doc['signature'] = array(
+    'value' => $signature_value,
+    'alg'   => 'HS256',
+    'ts'    => round( microtime( true ) * 1000 )
+  );
+
+  return rest_ensure_response( array(
+    'signature' => $signature_value,
+    'doc'       => $doc,
+  ) );
 }
 
 function csfx_lb_handle_verify_request( WP_REST_Request $request, $mode = 'verify' ){
@@ -380,6 +575,8 @@ function csfx_lb_handle_verify_request( WP_REST_Request $request, $mode = 'verif
   if ( isset( $payload['doc'] ) && is_array( $payload['doc'] ) ) {
     $doc = $payload['doc'];
   }
+
+  $signature_status = csfx_lb_validate_doc_signature( $doc );
 
   $order_id     = isset( $payload['orderId'] ) ? absint( $payload['orderId'] ) : 0;
   $order_number = isset( $payload['orderNumber'] ) ? sanitize_text_field( $payload['orderNumber'] ) : '';
@@ -439,6 +636,18 @@ function csfx_lb_handle_verify_request( WP_REST_Request $request, $mode = 'verif
 
   csfx_lb_sync_cashier_meta( $order, $doc );
 
+  $signature_warning = '';
+  if ( 'invalid' === $signature_status['status'] ) {
+    $signature_warning = 'Firma HMAC inválida: no se pudo comprobar integridad del respaldo.';
+    $comparison['warnings'][] = $signature_warning;
+  } elseif ( 'missing' === $signature_status['status'] ) {
+    $signature_warning = 'Respaldo sin firma HMAC: generado antes de la actualización o sin soporte de WebCrypto.';
+    $comparison['warnings'][] = $signature_warning;
+  } elseif ( 'unchecked' === $signature_status['status'] ) {
+    $signature_warning = 'No fue posible validar la firma HMAC en este entorno.';
+    $comparison['warnings'][] = $signature_warning;
+  }
+
   $status = 'verified';
   if ( ! $comparison['matches'] ) {
     $status = 'mismatch';
@@ -482,6 +691,7 @@ function csfx_lb_handle_verify_request( WP_REST_Request $request, $mode = 'verif
     'note_added'    => $note_added,
     'resync'        => $mode === 'resync',
     'resync_note'   => $resync_note_added,
+    'signature'     => $signature_status['status'],
     'created_order' => $created_during_resync,
   ) );
 }
@@ -958,6 +1168,7 @@ function csfx_lb_create_order_from_doc( $doc ){
   $items    = isset( $doc['cart']['items'] ) && is_array( $doc['cart']['items'] ) ? $doc['cart']['items'] : array();
   $payments = isset( $doc['payments'] ) && is_array( $doc['payments'] ) ? $doc['payments'] : array();
   $totals   = isset( $doc['totals'] ) && is_array( $doc['totals'] ) ? $doc['totals'] : array();
+  $customer = isset( $doc['customer'] ) && is_array( $doc['customer'] ) ? $doc['customer'] : array();
 
   if ( empty( $items ) ) {
     return new WP_Error( 'csfx_lb_missing_items', 'No hay productos en el respaldo para crear el pedido.' );
@@ -1056,6 +1267,8 @@ function csfx_lb_create_order_from_doc( $doc ){
   $order->set_payment_method( $method_id );
   $order->set_payment_method_title( $method_title );
 
+  $customer_note = csfx_lb_apply_customer_to_order( $order, $customer );
+
   if ( $order_number !== '' ) {
     $order->update_meta_data( '_openpos_order_number', $order_number );
     $order->update_meta_data( '_op_order_number', $order_number );
@@ -1082,11 +1295,173 @@ function csfx_lb_create_order_from_doc( $doc ){
 
   $order->save();
 
-  $order->add_order_note( 'CSFX Local Backup: Pedido creado mediante resync automático.' );
+  $creation_note = 'CSFX Local Backup: Pedido creado mediante resync automático.';
+  if ( $customer_note ) {
+    $creation_note .= "\n" . $customer_note;
+  }
+  $order->add_order_note( $creation_note );
 
   do_action( 'csfx_lb_resync_order_created', $order, $doc );
 
   return $order;
+}
+
+function csfx_lb_apply_customer_to_order( $order, $customer ){
+  if ( ! $order instanceof WC_Order ) {
+    return '';
+  }
+  if ( ! is_array( $customer ) || empty( $customer ) ) {
+    return '';
+  }
+
+  $notes        = array();
+  $user_id      = 0;
+  $raw_id       = isset( $customer['id'] ) ? trim( (string) $customer['id'] ) : '';
+  $email        = isset( $customer['email'] ) ? sanitize_email( $customer['email'] ) : '';
+  $identifiers  = array();
+
+  if ( $raw_id !== '' ) {
+    $identifiers[] = 'ID ' . $raw_id;
+    $candidate = get_user_by( 'ID', intval( $raw_id ) );
+    if ( $candidate instanceof WP_User ) {
+      $user_id = $candidate->ID;
+    }
+  }
+
+  if ( ! $user_id && $email ) {
+    $identifiers[] = $email;
+    $candidate = get_user_by( 'email', $email );
+    if ( $candidate instanceof WP_User ) {
+      $user_id = $candidate->ID;
+    }
+  }
+
+  if ( $user_id ) {
+    $order->set_customer_id( $user_id );
+  } elseif ( ! empty( $identifiers ) ) {
+    $notes[] = sprintf(
+      'Cliente POS no encontrado en WordPress (%s). Pedido creado como invitado.',
+      implode( ', ', array_unique( $identifiers ) )
+    );
+  }
+
+  $billing_source = array();
+  if ( isset( $customer['billing_address'] ) && is_array( $customer['billing_address'] ) ) {
+    $billing_source = $customer['billing_address'];
+  }
+
+  $billing_first_name = $billing_source['first_name'] ?? $customer['firstname'] ?? $customer['name'] ?? '';
+  $billing_last_name  = $billing_source['last_name'] ?? $customer['lastname'] ?? '';
+  $billing_company    = $billing_source['company'] ?? '';
+  $billing_address_1  = $billing_source['address_1'] ?? $customer['address'] ?? '';
+  $billing_address_2  = $billing_source['address_2'] ?? $customer['address_2'] ?? '';
+  $billing_city       = $billing_source['city'] ?? $customer['city'] ?? '';
+  $billing_state      = $billing_source['state'] ?? $customer['state'] ?? '';
+  $billing_postcode   = $billing_source['postcode'] ?? $customer['postcode'] ?? '';
+  $billing_country    = $billing_source['country'] ?? $customer['country'] ?? '';
+  $billing_email      = $billing_source['email'] ?? $email;
+  $billing_phone      = $billing_source['phone'] ?? $customer['phone'] ?? '';
+
+  if ( $billing_first_name !== '' ) {
+    $order->set_billing_first_name( sanitize_text_field( $billing_first_name ) );
+  }
+  if ( $billing_last_name !== '' ) {
+    $order->set_billing_last_name( sanitize_text_field( $billing_last_name ) );
+  }
+  if ( $billing_company !== '' ) {
+    $order->set_billing_company( sanitize_text_field( $billing_company ) );
+  }
+  if ( $billing_address_1 !== '' ) {
+    $order->set_billing_address_1( sanitize_text_field( $billing_address_1 ) );
+  }
+  if ( $billing_address_2 !== '' ) {
+    $order->set_billing_address_2( sanitize_text_field( $billing_address_2 ) );
+  }
+  if ( $billing_city !== '' ) {
+    $order->set_billing_city( sanitize_text_field( $billing_city ) );
+  }
+  if ( $billing_state !== '' ) {
+    $order->set_billing_state( sanitize_text_field( $billing_state ) );
+  }
+  if ( $billing_postcode !== '' ) {
+    $order->set_billing_postcode( sanitize_text_field( $billing_postcode ) );
+  }
+  if ( $billing_country !== '' ) {
+    $order->set_billing_country( sanitize_text_field( $billing_country ) );
+  }
+  if ( $billing_email !== '' ) {
+    $order->set_billing_email( sanitize_email( $billing_email ) );
+  }
+  if ( $billing_phone !== '' ) {
+    $order->set_billing_phone( sanitize_text_field( $billing_phone ) );
+  }
+
+  $shipping_source = array();
+  if ( isset( $customer['shipping_address'] ) && is_array( $customer['shipping_address'] ) && ! empty( $customer['shipping_address'] ) ) {
+    $first_shipping = reset( $customer['shipping_address'] );
+    if ( is_array( $first_shipping ) ) {
+      $shipping_source = $first_shipping;
+    }
+  }
+  if ( empty( $shipping_source ) ) {
+    $shipping_source = $billing_source;
+  }
+
+  if ( ! empty( $shipping_source ) ) {
+    $shipping_first_name = $shipping_source['first_name'] ?? $shipping_source['name'] ?? $billing_first_name;
+    $shipping_last_name  = $shipping_source['last_name'] ?? $billing_last_name;
+    $shipping_address_1  = $shipping_source['address_1'] ?? $shipping_source['address'] ?? $billing_address_1;
+    $shipping_address_2  = $shipping_source['address_2'] ?? $billing_address_2;
+    $shipping_city       = $shipping_source['city'] ?? $billing_city;
+    $shipping_state      = $shipping_source['state'] ?? $billing_state;
+    $shipping_postcode   = $shipping_source['postcode'] ?? $billing_postcode;
+    $shipping_country    = $shipping_source['country'] ?? $billing_country;
+    $shipping_phone      = $shipping_source['phone'] ?? $billing_phone;
+
+    if ( $shipping_first_name !== '' ) {
+      $order->set_shipping_first_name( sanitize_text_field( $shipping_first_name ) );
+    }
+    if ( $shipping_last_name !== '' ) {
+      $order->set_shipping_last_name( sanitize_text_field( $shipping_last_name ) );
+    }
+    if ( $shipping_address_1 !== '' ) {
+      $order->set_shipping_address_1( sanitize_text_field( $shipping_address_1 ) );
+    }
+    if ( $shipping_address_2 !== '' ) {
+      $order->set_shipping_address_2( sanitize_text_field( $shipping_address_2 ) );
+    }
+    if ( $shipping_city !== '' ) {
+      $order->set_shipping_city( sanitize_text_field( $shipping_city ) );
+    }
+    if ( $shipping_state !== '' ) {
+      $order->set_shipping_state( sanitize_text_field( $shipping_state ) );
+    }
+    if ( $shipping_postcode !== '' ) {
+      $order->set_shipping_postcode( sanitize_text_field( $shipping_postcode ) );
+    }
+    if ( $shipping_country !== '' ) {
+      $order->set_shipping_country( sanitize_text_field( $shipping_country ) );
+    }
+    if ( $shipping_phone !== '' ) {
+      if ( method_exists( $order, 'set_shipping_phone' ) ) {
+        $order->set_shipping_phone( sanitize_text_field( $shipping_phone ) );
+      } else {
+        $order->update_meta_data( '_shipping_phone', sanitize_text_field( $shipping_phone ) );
+      }
+    }
+  }
+
+  if ( ! empty( $customer['cedula_rif'] ) ) {
+    $order->update_meta_data( '_csfx_customer_document', sanitize_text_field( $customer['cedula_rif'] ) );
+  }
+  if ( ! empty( $customer['cedula_rif_tipo'] ) ) {
+    $order->update_meta_data( '_csfx_customer_document_type', sanitize_text_field( $customer['cedula_rif_tipo'] ) );
+  }
+  if ( ! empty( $customer['cedula_rif_num'] ) ) {
+    $order->update_meta_data( '_csfx_customer_document_number', sanitize_text_field( $customer['cedula_rif_num'] ) );
+  }
+
+  return implode( ' ', $notes );
 }
 
 function csfx_lb_parse_doc_datetime( $doc ){
@@ -1166,6 +1541,89 @@ function csfx_lb_build_transactions_meta( $payments, $order_number, $doc ){
   }
 
   return $transactions;
+}
+
+function csfx_lb_canonicalize_for_signature( $value ){
+  if ( is_array( $value ) ) {
+    $is_list = array_keys( $value ) === range( 0, count( $value ) - 1 );
+    if ( $is_list ) {
+      $normalized = array();
+      foreach ( $value as $item ) {
+        $normalized[] = csfx_lb_canonicalize_for_signature( $item );
+      }
+      return $normalized;
+    }
+
+    $normalized = array();
+    $keys       = array_keys( $value );
+    sort( $keys, SORT_STRING );
+    foreach ( $keys as $key ) {
+      if ( 'signature' === $key ) {
+        continue;
+      }
+      $normalized[ $key ] = csfx_lb_canonicalize_for_signature( $value[ $key ] );
+    }
+    return $normalized;
+  }
+
+  return $value;
+}
+
+function csfx_lb_calculate_doc_signature( $doc, $secret = null ){
+  $canonical = csfx_lb_canonicalize_for_signature( $doc );
+  $canonical_json = wp_json_encode( $canonical, JSON_UNESCAPED_SLASHES );
+  if ( null === $secret ) {
+    $secret = csfx_lb_signature_secret();
+  }
+  return hash_hmac( 'sha256', $canonical_json, $secret );
+}
+
+function csfx_lb_validate_doc_signature( $doc ){
+  if ( ! is_array( $doc ) ) {
+    return array( 'status' => 'invalid' );
+  }
+
+  if ( empty( $doc['signature'] ) ) {
+    return array( 'status' => 'missing' );
+  }
+
+  $signature_node = $doc['signature'];
+  $signature_value = '';
+  if ( is_array( $signature_node ) && isset( $signature_node['value'] ) ) {
+    $signature_value = (string) $signature_node['value'];
+  } elseif ( is_string( $signature_node ) ) {
+    $signature_value = $signature_node;
+  }
+
+  if ( '' === $signature_value ) {
+    return array( 'status' => 'missing' );
+  }
+
+  $expected = csfx_lb_calculate_doc_signature( $doc );
+  if ( hash_equals( $expected, $signature_value ) ) {
+    return array( 'status' => 'valid' );
+  }
+
+  $candidates = csfx_lb_signature_secret_candidates();
+  $primary    = isset( $candidates['primary'] ) ? $candidates['primary'] : null;
+  $expected_primary = $expected;
+  unset( $candidates['primary'] );
+
+  foreach ( $candidates as $label => $secret_candidate ) {
+    $expected_candidate = csfx_lb_calculate_doc_signature( $doc, $secret_candidate );
+    if ( hash_equals( $expected_candidate, $signature_value ) ) {
+      return array(
+        'status' => 'valid_legacy',
+        'used'   => $label,
+      );
+    }
+  }
+
+  return array(
+    'status'   => 'invalid',
+    'expected' => $expected_primary,
+    'provided' => $signature_value,
+  );
 }
 
 function csfx_lb_to_number( $value ){
