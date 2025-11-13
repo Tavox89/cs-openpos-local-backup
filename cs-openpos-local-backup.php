@@ -466,6 +466,7 @@ function csfx_lb_stream_cierre_viewer(){
 }
 
 add_action('rest_api_init', 'csfx_lb_register_rest_routes');
+add_action( 'csfx_lb_resync_order_created', 'csfx_lb_maybe_create_openpos_transactions', 10, 2 );
 
 function csfx_lb_register_rest_routes(){
   register_rest_route(
@@ -631,6 +632,8 @@ function csfx_lb_handle_verify_request( WP_REST_Request $request, $mode = 'verif
       ) );
     }
   }
+
+  csfx_lb_maybe_create_openpos_transactions( $order, $doc );
 
   $comparison = csfx_lb_compare_order_with_doc( $order, $doc );
 
@@ -866,7 +869,74 @@ function csfx_lb_collect_doc_totals( $doc ){
       }
     }
   }
+
+  if ( isset( $totals['grand_total'] ) && isset( $totals['remain_paid'] ) ) {
+    $grand_total = csfx_lb_to_number( $totals['grand_total'] );
+    $remain_paid = csfx_lb_to_number( $totals['remain_paid'] );
+    $totals['total_paid'] = max( 0, $grand_total - $remain_paid );
+  }
+
   return $totals;
+}
+
+function csfx_lb_doc_remain_amount( $doc ){
+  $sources = array();
+  if ( isset( $doc['totals'] ) && is_array( $doc['totals'] ) ) {
+    $sources[] = $doc['totals'];
+  }
+  if ( isset( $doc['orderData']['totals'] ) && is_array( $doc['orderData']['totals'] ) ) {
+    $sources[] = $doc['orderData']['totals'];
+  }
+  foreach ( $sources as $source ) {
+    if ( isset( $source['remain_paid'] ) && $source['remain_paid'] !== '' ) {
+      return csfx_lb_to_number( $source['remain_paid'] );
+    }
+    if ( isset( $source['remain'] ) && $source['remain'] !== '' ) {
+      return csfx_lb_to_number( $source['remain'] );
+    }
+  }
+  return 0;
+}
+
+function csfx_lb_doc_has_outstanding_balance( $doc ){
+  return csfx_lb_doc_remain_amount( $doc ) > 0.01;
+}
+
+function csfx_lb_doc_status( $doc ){
+  $candidates = array();
+  if ( isset( $doc['status'] ) ) {
+    $candidates[] = $doc['status'];
+  }
+  if ( isset( $doc['orderData']['status'] ) ) {
+    $candidates[] = $doc['orderData']['status'];
+  }
+  foreach ( $candidates as $candidate ) {
+    $status = sanitize_key( (string) $candidate );
+    if ( $status !== '' ) {
+      return $status;
+    }
+  }
+  return '';
+}
+
+function csfx_lb_order_has_outstanding_balance( $order ){
+  if ( ! class_exists( 'WC_Order' ) || ! $order instanceof WC_Order ) {
+    return false;
+  }
+  $remain_meta = csfx_lb_to_number( $order->get_meta( '_csfx_lb_remain_paid', true ) );
+  if ( $remain_meta > 0.01 ) {
+    return true;
+  }
+
+  $status = sanitize_key( (string) $order->get_status() );
+  if ( in_array( $status, array( 'pending', 'on-hold' ), true ) ) {
+    $transactions_paid = csfx_lb_order_paid_amount_from_transactions( $order );
+    if ( $transactions_paid <= 0.01 ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function csfx_lb_collect_wc_totals( $order ){
@@ -878,6 +948,19 @@ function csfx_lb_collect_wc_totals( $order ){
   $refunded   = csfx_lb_to_number( method_exists( $order, 'get_total_refunded' ) ? $order->get_total_refunded() : 0 );
   $total_paid = max( 0, $total - $refunded );
 
+  $transactions_paid = csfx_lb_order_paid_amount_from_transactions( $order );
+  if ( $transactions_paid > 0 ) {
+    $total_paid = min( $total, $transactions_paid );
+  }
+
+  $remain_meta = csfx_lb_to_number( $order->get_meta( '_csfx_lb_remain_paid', true ) );
+  $status = sanitize_key( (string) $order->get_status() );
+  if ( $remain_meta > 0.01 ) {
+    $total_paid = max( 0, $total - $remain_meta );
+  } elseif ( in_array( $status, array( 'pending', 'on-hold' ), true ) && $transactions_paid <= 0 ) {
+    $total_paid = 0;
+  }
+
   $discount_total = csfx_lb_to_number( $order->get_discount_total() );
   foreach ( $order->get_items( 'fee' ) as $fee_item ) {
     $fee_total = csfx_lb_to_number( $fee_item->get_total() );
@@ -886,11 +969,16 @@ function csfx_lb_collect_wc_totals( $order ){
     }
   }
 
+  $remain_value = max( 0, $total - $total_paid );
+  if ( $remain_meta > 0.01 ) {
+    $remain_value = $remain_meta;
+  }
+
   return array(
     'sub_total'       => $subtotal,
     'grand_total'     => $total,
     'total_paid'      => $total_paid,
-    'remain_paid'     => max( 0, $total - $total_paid ),
+    'remain_paid'     => $remain_value,
     'discount_amount' => $discount_total,
     'tax_amount'      => csfx_lb_to_number( $order->get_total_tax() ),
   );
@@ -987,9 +1075,13 @@ function csfx_lb_compare_payments( $order, $doc ){
   $report = array();
   $differences = array();
   $warnings = array();
+  $laybuy_pending = false;
 
   $local = csfx_lb_extract_doc_payments( $doc );
   $remote = csfx_lb_extract_wc_payments( $order );
+
+  $doc_outstanding   = csfx_lb_doc_has_outstanding_balance( $doc );
+  $order_outstanding = csfx_lb_order_has_outstanding_balance( $order );
 
   $map_local = array();
   foreach ( $local as $payment ) {
@@ -1041,7 +1133,11 @@ function csfx_lb_compare_payments( $order, $doc ){
     }
   }
 
-  if ( empty( $remote ) ) {
+  if ( empty( $local ) && empty( $remote ) && ( $doc_outstanding || $order_outstanding ) ) {
+    $laybuy_pending = true;
+  }
+
+  if ( empty( $remote ) && ! $laybuy_pending ) {
     $warnings[] = 'No se encontraron transacciones en WooCommerce para comparar.';
   }
 
@@ -1049,6 +1145,7 @@ function csfx_lb_compare_payments( $order, $doc ){
     'report'      => $report,
     'differences' => $differences,
     'warnings'    => $warnings,
+    'laybuy_pending' => $laybuy_pending,
   );
 }
 
@@ -1066,6 +1163,61 @@ function csfx_lb_extract_doc_payments( $doc ){
   return csfx_lb_group_payments( $normalized );
 }
 
+function csfx_lb_collect_doc_payment_rows( $doc ){
+  if ( ! is_array( $doc ) ) {
+    return array();
+  }
+
+  $candidates = array();
+  $paths      = array(
+    array( 'payments' ),
+    array( 'orderData', 'payments' ),
+    array( 'orderData', 'payment_method' ),
+    array( 'orderData', 'transactions' ),
+    array( 'cart', 'payments' ),
+  );
+
+  foreach ( $paths as $path ) {
+    $node = $doc;
+    foreach ( $path as $segment ) {
+      if ( ! isset( $node[ $segment ] ) ) {
+        $node = null;
+        break;
+      }
+      $node = $node[ $segment ];
+    }
+    if ( empty( $node ) ) {
+      continue;
+    }
+    if ( is_array( $node ) ) {
+      $candidates = $node;
+      break;
+    }
+    if ( is_object( $node ) ) {
+      $candidates = (array) $node;
+      break;
+    }
+  }
+
+  if ( ! is_array( $candidates ) ) {
+    return array();
+  }
+
+  $is_list = array_keys( $candidates ) === range( 0, count( $candidates ) - 1 );
+  if ( ! $is_list ) {
+    $candidates = array_values( $candidates );
+  }
+
+  $payments = array();
+  foreach ( $candidates as $payment ) {
+    if ( is_array( $payment ) ) {
+      $payments[] = $payment;
+    }
+  }
+
+  return $payments;
+}
+
 function csfx_lb_extract_wc_payments( $order ){
   if ( ! class_exists( 'WC_Order' ) || ! $order instanceof WC_Order ) {
     return array();
@@ -1076,40 +1228,17 @@ function csfx_lb_extract_wc_payments( $order ){
     return $payments;
   }
 
-  $candidates = array(
-    '_openpos_transactions',
-    '_op_transactions',
-    '_op_payment_transactions',
-    'op_transactions',
-    '_openpos_payment_transactions'
-  );
   $payments = array();
-  foreach ( $candidates as $key ) {
-    $value = $order->get_meta( $key, true );
-    if ( empty( $value ) ) {
-      continue;
-    }
-    if ( is_string( $value ) ) {
-      $json = json_decode( $value, true );
-      if ( json_last_error() === JSON_ERROR_NONE ) {
-        $value = $json;
-      }
-    }
-    if ( is_string( $value ) ) {
-      $value = maybe_unserialize( $value );
-    }
-    if ( ! is_array( $value ) ) {
-      continue;
-    }
-    foreach ( $value as $payment ) {
-      if ( ! is_array( $payment ) ) {
-        continue;
-      }
-      $payments[] = csfx_lb_normalize_payment_row( $payment );
-    }
+  foreach ( csfx_lb_get_order_transactions_meta( $order ) as $payment ) {
+    $payments[] = csfx_lb_normalize_payment_row( $payment );
   }
 
   if ( empty( $payments ) ) {
+    $status = sanitize_key( (string) $order->get_status() );
+    $remain_meta = csfx_lb_to_number( $order->get_meta( '_csfx_lb_remain_paid', true ) );
+    if ( in_array( $status, array( 'pending', 'on-hold' ), true ) || $remain_meta > 0.01 ) {
+      return array();
+    }
     $payments[] = array(
       'code'   => sanitize_key( $order->get_payment_method() ?: 'pago' ),
       'label'  => sanitize_text_field( $order->get_payment_method_title() ?: 'Pago' ),
@@ -1166,7 +1295,7 @@ function csfx_lb_create_order_from_doc( $doc ){
 
   $doc = is_array( $doc ) ? $doc : array();
   $items    = isset( $doc['cart']['items'] ) && is_array( $doc['cart']['items'] ) ? $doc['cart']['items'] : array();
-  $payments = isset( $doc['payments'] ) && is_array( $doc['payments'] ) ? $doc['payments'] : array();
+  $payments = csfx_lb_collect_doc_payment_rows( $doc );
   $totals   = isset( $doc['totals'] ) && is_array( $doc['totals'] ) ? $doc['totals'] : array();
   $customer = isset( $doc['customer'] ) && is_array( $doc['customer'] ) ? $doc['customer'] : array();
 
@@ -1174,8 +1303,16 @@ function csfx_lb_create_order_from_doc( $doc ){
     return new WP_Error( 'csfx_lb_missing_items', 'No hay productos en el respaldo para crear el pedido.' );
   }
 
+  $default_status = apply_filters( 'csfx_lb_resync_default_status', 'completed', $doc );
+  $doc_status     = csfx_lb_doc_status( $doc );
+  $order_status   = $doc_status ?: $default_status;
+  if ( csfx_lb_doc_has_outstanding_balance( $doc ) ) {
+    $laybuy_status = apply_filters( 'op_laybuy_order_status', 'pending' );
+    $order_status  = $laybuy_status ?: 'pending';
+  }
+
   $order_args = array(
-    'status'      => apply_filters( 'csfx_lb_resync_default_status', 'completed', $doc ),
+    'status'      => $order_status,
     'customer_id' => 0,
     'created_via' => 'csfx-resync',
   );
@@ -1261,8 +1398,13 @@ function csfx_lb_create_order_from_doc( $doc ){
   $order->set_total( $order_total );
 
   $primary_payment = isset( $payments[0] ) ? $payments[0] : array();
-  $method_id = sanitize_key( $primary_payment['code'] ?? 'csfx-offline' );
-  $method_title = sanitize_text_field( $primary_payment['label'] ?? $primary_payment['name'] ?? 'CSFX Resync' );
+  if ( ! empty( $primary_payment ) ) {
+    $method_id = sanitize_key( $primary_payment['code'] ?? 'csfx-offline' );
+    $method_title = sanitize_text_field( $primary_payment['label'] ?? $primary_payment['name'] ?? 'CSFX Resync' );
+  } else {
+    $method_id = 'csfx-laybuy';
+    $method_title = __( 'Pagar en POS', 'csfx-lb' );
+  }
 
   $order->set_payment_method( $method_id );
   $order->set_payment_method_title( $method_title );
@@ -1282,16 +1424,20 @@ function csfx_lb_create_order_from_doc( $doc ){
   $created_at = csfx_lb_parse_doc_datetime( $doc );
   if ( $created_at ) {
     $order->set_date_created( $created_at );
-    $order->set_date_paid( $created_at );
+    if ( ! csfx_lb_doc_has_outstanding_balance( $doc ) ) {
+      $order->set_date_paid( $created_at );
+    }
   }
 
-  $transactions_meta = csfx_lb_build_transactions_meta( $payments, $order->get_order_number(), $doc );
+  $transactions_meta = csfx_lb_build_transactions_meta( $payments, $order->get_order_number(), $doc, $cashier_user_id );
   if ( ! empty( $transactions_meta ) ) {
     $order->update_meta_data( '_openpos_transactions', $transactions_meta );
     $order->update_meta_data( '_op_transactions', $transactions_meta );
     $order->update_meta_data( '_op_payment_transactions', $transactions_meta );
     $order->update_meta_data( '_openpos_payment_transactions', $transactions_meta );
   }
+
+  csfx_lb_sync_remain_meta( $order, $doc );
 
   $order->save();
 
@@ -1505,23 +1651,67 @@ function csfx_lb_parse_doc_datetime( $doc ){
   return null;
 }
 
-function csfx_lb_build_transactions_meta( $payments, $order_number, $doc ){
+function csfx_lb_build_transactions_meta( $payments, $order_number, $doc, $cashier_user_id = 0 ){
   if ( ! is_array( $payments ) || empty( $payments ) ) {
     return array();
   }
 
-  $now = current_time( 'mysql' );
-  $current_user = wp_get_current_user();
-  $user_login   = ( $current_user && isset( $current_user->user_login ) && $current_user->user_login ) ? $current_user->user_login : 'csfx';
+  $dt = csfx_lb_parse_doc_datetime( $doc );
+  if ( $dt instanceof WC_DateTime ) {
+    $created_timestamp = $dt->getTimestamp();
+    $created_local     = $dt->date_i18n( 'Y-m-d H:i:s' );
+  } else {
+    $created_timestamp = current_time( 'timestamp', true );
+    $created_local     = current_time( 'mysql' );
+    $dt                = null;
+  }
+  $created_utc = gmdate( 'Y-m-d H:i:s', $created_timestamp );
+
+  $user_id    = $cashier_user_id ? intval( $cashier_user_id ) : get_current_user_id();
+  $user_login = 'csfx';
+  if ( $user_id ) {
+    $user = get_user_by( 'id', $user_id );
+    if ( $user && $user->user_login ) {
+      $user_login = $user->user_login;
+    }
+  } else {
+    $current_user = wp_get_current_user();
+    if ( $current_user && isset( $current_user->user_login ) && $current_user->user_login ) {
+      $user_login = $current_user->user_login;
+    }
+  }
+
+  $session_id = '';
+  if ( isset( $doc['eventSession'] ) ) {
+    $session_id = sanitize_text_field( (string) $doc['eventSession'] );
+  } elseif ( isset( $doc['session'] ) ) {
+    $session_id = sanitize_text_field( (string) $doc['session'] );
+  }
+
   $transactions = array();
   foreach ( $payments as $payment ) {
     $amount = csfx_lb_to_number( $payment['amount'] ?? 0 );
     $change = csfx_lb_to_number( $payment['change'] ?? 0 );
+    $payment_code = sanitize_key( $payment['code'] ?? $payment['method'] ?? 'pago' );
+    $payment_name = sanitize_text_field( $payment['name'] ?? $payment['label'] ?? $payment['method'] ?? 'Pago' );
+    $payment_ref  = sanitize_text_field( $payment['payment_ref'] ?? $payment['ref'] ?? $payment['reference'] ?? '' );
+    $currency     = null;
+    if ( isset( $payment['currency'] ) && is_array( $payment['currency'] ) ) {
+      $currency = $payment['currency'];
+    } elseif ( isset( $payment['currency_code'] ) || isset( $payment['currency_symbol'] ) ) {
+      $currency = array(
+        'code'   => $payment['currency_code'] ?? '',
+        'symbol' => $payment['currency_symbol'] ?? '',
+      );
+    } elseif ( isset( $doc['totals']['currency'] ) && is_array( $doc['totals']['currency'] ) ) {
+      $currency = $doc['totals']['currency'];
+    }
+
     $transactions[] = array(
-      'code'           => $payment['code'] ?? 'pago',
-      'name'           => $payment['name'] ?? $payment['label'] ?? 'Pago',
-      'payment_name'   => $payment['label'] ?? $payment['name'] ?? 'Pago',
-      'payment_code'   => $payment['code'] ?? 'pago',
+      'code'           => $payment_code,
+      'name'           => $payment_name,
+      'payment_name'   => $payment_name,
+      'payment_code'   => $payment_code,
       'in_amount'      => $amount,
       'paid'           => $amount,
       'amount'         => $amount,
@@ -1530,13 +1720,18 @@ function csfx_lb_build_transactions_meta( $payments, $order_number, $doc ){
       'change'         => $change,
       'return'         => $change,
       'return_amount'  => $change,
-      'created_at'     => $now,
-      'created_at_utc' => $now,
+      'created_at'     => $created_local,
+      'created_at_utc' => $created_utc,
+      'created_at_time'=> $created_timestamp,
       'user'           => $user_login,
+      'user_id'        => $user_id,
+      'currency'       => $currency,
+      'payment_ref'    => $payment_ref,
+      'session'        => $session_id,
       'note'           => sprintf( 'Pedido #%s', $order_number ),
       'ref'            => $order_number,
-      'method'         => $payment['code'] ?? 'pago',
-      'method_title'   => $payment['label'] ?? $payment['name'] ?? 'Pago',
+      'method'         => $payment_code,
+      'method_title'   => $payment_name,
     );
   }
 
@@ -1933,4 +2128,255 @@ function csfx_lb_sync_cashier_meta( $order, $doc ){
   if ( $dirty ) {
     $order->save();
   }
+}
+
+function csfx_lb_maybe_create_openpos_transactions( $order, $doc ){
+  if ( ! class_exists( 'WC_Order' ) || ! $order instanceof WC_Order ) {
+    return;
+  }
+
+  $raw_payments = csfx_lb_collect_doc_payment_rows( is_array( $doc ) ? $doc : array() );
+  $has_outstanding = csfx_lb_doc_has_outstanding_balance( $doc );
+  $order_pending   = in_array( sanitize_key( (string) $order->get_status() ), array( 'pending', 'on-hold' ), true );
+  $should_skip_transactions = empty( $raw_payments ) && ( $has_outstanding || $order_pending );
+
+  $cashier_user_id = csfx_lb_find_cashier_user_id( $doc );
+  if ( ! $cashier_user_id ) {
+    $cashier_user_id = get_current_user_id();
+  }
+
+  $meta_changed = csfx_lb_sync_remain_meta( $order, $doc );
+
+  global $op_transaction;
+  $op_ready = is_object( $op_transaction ) && method_exists( $op_transaction, 'add' ) && method_exists( $op_transaction, 'getOrderTransactions' );
+  $existing = array();
+  if ( $op_ready ) {
+    $existing = $op_transaction->getOrderTransactions( $order->get_id(), array( 'order' ) );
+  }
+
+  if ( $should_skip_transactions ) {
+    if ( ! empty( $existing ) ) {
+      foreach ( $existing as $transaction ) {
+        $sys_id = isset( $transaction['sys_id'] ) ? absint( $transaction['sys_id'] ) : 0;
+        if ( $sys_id ) {
+          wp_delete_post( $sys_id, true );
+        }
+      }
+    }
+    $meta_changed = csfx_lb_clear_transactions_meta( $order ) || $meta_changed;
+    if ( $meta_changed ) {
+      $order->save();
+    }
+    return;
+  }
+
+  if ( empty( $raw_payments ) ) {
+    $raw_payments[] = array(
+      'code'   => $order->get_payment_method() ?: 'pago',
+      'label'  => $order->get_payment_method_title() ?: 'Pago',
+      'amount' => csfx_lb_to_number( $order->get_total() ),
+      'change' => 0,
+    );
+  }
+
+  $transactions_meta = csfx_lb_build_transactions_meta( $raw_payments, $order->get_order_number(), $doc, $cashier_user_id );
+  if ( empty( $transactions_meta ) ) {
+    return;
+  }
+
+  $order_local_id = '';
+  if ( isset( $doc['orderLocalId'] ) ) {
+    $order_local_id = sanitize_text_field( (string) $doc['orderLocalId'] );
+  }
+  if ( '' === $order_local_id ) {
+    $order_local_id = sanitize_text_field( (string) $order->get_meta( '_op_local_id', true ) );
+  }
+
+  $session_id = '';
+  if ( isset( $doc['eventSession'] ) ) {
+    $session_id = sanitize_text_field( (string) $doc['eventSession'] );
+  } elseif ( isset( $doc['session'] ) ) {
+    $session_id = sanitize_text_field( (string) $doc['session'] );
+  }
+
+  if ( ! empty( $existing ) ) {
+    foreach ( $existing as $transaction ) {
+      $sys_id = isset( $transaction['sys_id'] ) ? absint( $transaction['sys_id'] ) : 0;
+      if ( $sys_id ) {
+        wp_delete_post( $sys_id, true );
+      }
+    }
+  }
+
+  if ( $op_ready ) {
+    foreach ( $transactions_meta as $payment_meta ) {
+      $payload = csfx_lb_prepare_transaction_payload(
+        $payment_meta,
+        $order,
+        $order_local_id,
+        $session_id,
+        $cashier_user_id,
+        isset( $doc['registerName'] ) ? sanitize_text_field( (string) $doc['registerName'] ) : ''
+      );
+      $op_transaction->add( $payload );
+    }
+  }
+
+  $order->update_meta_data( '_openpos_transactions', $transactions_meta );
+  $order->update_meta_data( '_op_transactions', $transactions_meta );
+  $order->update_meta_data( '_op_payment_transactions', $transactions_meta );
+  $order->update_meta_data( '_openpos_payment_transactions', $transactions_meta );
+  $order->save();
+}
+
+function csfx_lb_transactions_have_value( $transactions ){
+  if ( empty( $transactions ) || ! is_array( $transactions ) ) {
+    return false;
+  }
+  foreach ( $transactions as $transaction ) {
+    $in  = csfx_lb_to_number( $transaction['in_amount'] ?? $transaction['amount'] ?? 0 );
+    $out = csfx_lb_to_number( $transaction['out_amount'] ?? $transaction['change'] ?? 0 );
+    if ( csfx_lb_numbers_differs( $in, 0 ) >= 0.01 || csfx_lb_numbers_differs( $out, 0 ) >= 0.01 ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function csfx_lb_prepare_transaction_payload( $payment_meta, $order, $order_local_id, $session_id, $cashier_user_id, $register_name = '' ){
+  $in_amount  = csfx_lb_to_number( $payment_meta['in_amount'] ?? $payment_meta['amount'] ?? 0 );
+  $out_amount = csfx_lb_to_number( $payment_meta['out_amount'] ?? $payment_meta['change'] ?? 0 );
+  $payment_code = sanitize_key( $payment_meta['payment_code'] ?? $payment_meta['code'] ?? $payment_meta['method'] ?? 'pago' );
+  $payment_name = sanitize_text_field( $payment_meta['payment_name'] ?? $payment_meta['name'] ?? $payment_meta['label'] ?? 'Pago' );
+  $created_at_local = $payment_meta['created_at'] ?? current_time( 'mysql' );
+  $created_at_utc   = $payment_meta['created_at_utc'] ?? current_time( 'mysql', 1 );
+  $created_at_time  = isset( $payment_meta['created_at_time'] ) ? absint( $payment_meta['created_at_time'] ) : current_time( 'timestamp', true );
+
+  $source_data = array(
+    'order_id'       => $order->get_id(),
+    'order_number'   => $order->get_order_number(),
+    'order_local_id' => $order_local_id,
+  );
+  if ( $register_name !== '' ) {
+    $source_data['register_name'] = $register_name;
+  }
+
+  return array(
+    'in_amount'       => $in_amount,
+    'out_amount'      => $out_amount,
+    'payment_code'    => $payment_code,
+    'payment_name'    => $payment_name,
+    'payment_ref'     => sanitize_text_field( $payment_meta['payment_ref'] ?? $payment_meta['ref'] ?? '' ),
+    'created_at'      => $created_at_local,
+    'created_at_utc'  => $created_at_utc,
+    'created_at_time' => $created_at_time,
+    'user_id'         => intval( $payment_meta['user_id'] ?? $cashier_user_id ),
+    'source_type'     => 'order',
+    'source'          => $order->get_id(),
+    'source_data'     => $source_data,
+    'session'         => $payment_meta['session'] ?? $session_id,
+    'currency'        => $payment_meta['currency'] ?? null,
+    'ref'             => $payment_meta['ref'] ?? sprintf( 'Pedido #%s', $order->get_order_number() ),
+  );
+}
+
+function csfx_lb_sync_remain_meta( $order, $doc ){
+  if ( ! $order instanceof WC_Order ) {
+    return false;
+  }
+  $remain = csfx_lb_doc_remain_amount( $doc );
+  $changed = false;
+  if ( $remain > 0.01 ) {
+    $order->update_meta_data( '_csfx_lb_remain_paid', $remain );
+    $order->update_meta_data( '_op_remain_paid', $remain );
+    $order->update_meta_data( '_op_allow_laybuy', 'yes' );
+    $changed = true;
+  } else {
+    if ( $order->get_meta( '_csfx_lb_remain_paid', true ) ) {
+      $order->delete_meta_data( '_csfx_lb_remain_paid' );
+      $changed = true;
+    }
+    if ( $order->get_meta( '_op_remain_paid', true ) ) {
+      $order->delete_meta_data( '_op_remain_paid' );
+      $changed = true;
+    }
+    if ( $order->get_meta( '_op_allow_laybuy', true ) ) {
+      $order->delete_meta_data( '_op_allow_laybuy' );
+      $changed = true;
+    }
+  }
+  return $changed;
+}
+
+function csfx_lb_clear_transactions_meta( $order ){
+  if ( ! $order instanceof WC_Order ) {
+    return false;
+  }
+  $keys = array(
+    '_openpos_transactions',
+    '_op_transactions',
+    '_op_payment_transactions',
+    'op_transactions',
+    '_openpos_payment_transactions'
+  );
+  $changed = false;
+  foreach ( $keys as $key ) {
+    if ( $order->get_meta( $key, true ) ) {
+      $order->delete_meta_data( $key );
+      $changed = true;
+    }
+  }
+  return $changed;
+}
+
+function csfx_lb_get_order_transactions_meta( $order ){
+  if ( ! class_exists( 'WC_Order' ) || ! $order instanceof WC_Order ) {
+    return array();
+  }
+  $candidates = array(
+    '_openpos_transactions',
+    '_op_transactions',
+    '_op_payment_transactions',
+    'op_transactions',
+    '_openpos_payment_transactions'
+  );
+  $records = array();
+  foreach ( $candidates as $key ) {
+    $value = $order->get_meta( $key, true );
+    if ( empty( $value ) ) {
+      continue;
+    }
+    if ( is_string( $value ) ) {
+      $json = json_decode( $value, true );
+      if ( json_last_error() === JSON_ERROR_NONE ) {
+        $value = $json;
+      }
+    }
+    if ( is_string( $value ) ) {
+      $value = maybe_unserialize( $value );
+    }
+    if ( ! is_array( $value ) ) {
+      continue;
+    }
+    foreach ( $value as $row ) {
+      if ( is_array( $row ) ) {
+        $records[] = $row;
+      }
+    }
+  }
+  return $records;
+}
+
+function csfx_lb_order_paid_amount_from_transactions( $order ){
+  $records = csfx_lb_get_order_transactions_meta( $order );
+  if ( empty( $records ) ) {
+    return 0;
+  }
+  $sum = 0;
+  foreach ( $records as $record ) {
+    $paid = csfx_lb_to_number( $record['in_amount'] ?? $record['amount'] ?? 0 );
+    $change = csfx_lb_to_number( $record['out_amount'] ?? $record['change'] ?? 0 );
+    $sum += max( 0, $paid - $change );
+  }
+  return max( 0, $sum );
 }

@@ -34,6 +34,7 @@
   .status-pill.missing{background:#fef3c7;color:#92400e;border-color:rgba(217,119,6,.35)}
   .status-pill.loading{background:#e0f2fe;color:#0369a1;border-color:rgba(3,105,161,.35)}
   .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#eef;border-radius:999px;font-size:12px;color:#334}
+  .laybuy-pill{display:inline-flex;align-items:center;margin-left:6px;padding:2px 8px;border-radius:999px;background:#fef3c7;border:1px solid rgba(217,119,6,.4);color:#92400e;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
   .cashier-summary{margin-top:8px;padding:6px 12px;background:#f4f8ff;border-radius:8px;font-size:13px;color:#264a8a;display:flex;flex-wrap:wrap;gap:8px}
   .cashier-summary strong{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#1e3a8a}
   .summary-grid{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px}
@@ -507,6 +508,15 @@
     if (rawTotals && typeof rawTotals === 'object' && rawTotals.currency) {
       totalsData.currency = {...rawTotals.currency};
     }
+    const remainPaid = toAmount(
+      (totalsData && totalsData.remain_paid != null ? totalsData.remain_paid : null)
+        ?? (rawTotals && rawTotals.remain_paid != null ? rawTotals.remain_paid : null)
+        ?? (rawTotals && rawTotals.remain != null ? rawTotals.remain : null)
+        ?? (orderData && orderData.totals && orderData.totals.remain_paid != null ? orderData.totals.remain_paid : null)
+        ?? (doc?.totals?.remain_paid ?? doc?.totals?.remain ?? 0)
+    );
+    totalsData.remain_paid = remainPaid;
+    const laybuyPending = remainPaid > 0.01;
     const cartItems = Array.isArray(orderData?.items)
       ? orderData.items
       : Array.isArray(doc?.cart?.items)
@@ -622,7 +632,8 @@
       signatureStatus,
       verification: null,
       verificationError: null,
-      verificationLoading: false
+      verificationLoading: false,
+      laybuyPending
     };
   }
 
@@ -1104,9 +1115,10 @@
         const needsRefirm = o.signatureStatus && o.signatureStatus !== 'valid';
         const refirmDisabledAttr = verifyDisabled ? 'disabled' : '';
         const refirmButton = needsRefirm ? `<button class="action-btn btn-verify action-refirm" data-id="${o.id}" data-action="refirm" ${refirmDisabledAttr}>Re-firmar</button>` : '';
+        const laybuyBadge = o.laybuyPending ? '<span class="laybuy-pill">LayBuy</span>' : '';
         tr.innerHTML = `
           <td>${safe(o.orderNumber)}</td>
-          <td>${safe(o.customerName)}</td>
+          <td>${safe(o.customerName)} ${laybuyBadge}</td>
           <td>${safe(o.totalDisplay)}</td>
           <td>${paymentsHtml}</td>
           <td>${safe(createdAtLocale)}</td>
@@ -1189,6 +1201,7 @@
       ['Total', order.totalDisplay || fmtMoney(order.total)],
       ['Descuento general', order.discountDisplay || fmtMoney(order.discountAmount)],
       ['Status verificación', getVerificationMeta(order).label || 'Sin sinc.'],
+      ['LayBuy', order.laybuyPending ? 'Sí (pendiente de pago)' : 'No'],
       ['Status POS', order.docStatus || '—'],
       ['Firma HMAC', signatureStatusLabel(order.signatureStatus)],
       ['Nota', order.orderData?.note || '—'],
@@ -1348,59 +1361,104 @@
     }
     try{
       folder = await showDirectoryPicker({mode:'readwrite'});
-      $('#info').textContent = 'Carpeta: ' + (folder.name || '(día)');
-      orders=[];
+      const folderLabel = folder.name || '(día)';
+      $('#info').textContent = 'Carpeta: ' + folderLabel + ' (cargando…)';
+      orders = [];
       verifyAllRunning = false;
       fileHandleMap.clear();
+      buildSummary();
+      renderGroups();
+      $('#orders').innerHTML = '<p class="muted">Cargando órdenes…</p>';
 
+      const entries = [];
       for await (const entry of folder.values()){
         if(entry.kind!=='file' || !entry.name.endsWith('.json')) continue;
         fileHandleMap.set(entry.name, entry);
-        const file=await entry.getFile();
-        const txt=await file.text();
-        let docOriginal=null; try{docOriginal=JSON.parse(txt);}catch{continue;}
-        let signatureResult={ status: WEB_CRYPTO_AVAILABLE ? 'missing' : 'unchecked' };
-        try {
-          signatureResult = await verifyDocSignature(docOriginal);
-          if (signatureResult && signatureResult.status && signatureResult.status !== 'valid') {
-            console.warn('[CSFX][Signature][Folder]', entry.name, signatureResult);
-            if (WEB_CRYPTO_AVAILABLE && requestServerSignature) {
-              try {
-                const refreshed = await requestServerSignature(JSON.parse(JSON.stringify(docOriginal)));
-                if (refreshed && refreshed.doc && refreshed.signature) {
-                  docOriginal = refreshed.doc;
-                  signatureResult = { status: 'valid', source: 'server' };
-                  try {
-                    const writable = await entry.createWritable();
-                    await writable.write(JSON.stringify(docOriginal, null, 2));
-                    await writable.close();
-                  } catch (err) {
-                    console.warn('[CSFX][Folder] no se pudo actualizar archivo firmado', entry.name, err);
+        entries.push(entry);
+      }
+
+      const loadedOrders = [];
+      const coreHint = (typeof navigator !== 'undefined' && Number.isFinite(navigator.hardwareConcurrency))
+        ? navigator.hardwareConcurrency
+        : 4;
+      const maxWorkers = Math.min(8, Math.max(2, coreHint || 4));
+      let cursor = 0;
+
+      const getNextEntry = () => {
+        if (cursor >= entries.length) return null;
+        const entry = entries[cursor];
+        cursor += 1;
+        return entry;
+      };
+
+      const processEntry = async (entry) => {
+        try{
+          const file = await entry.getFile();
+          const txt = await file.text();
+          let docOriginal=null; try{docOriginal=JSON.parse(txt);}catch(e){return;}
+          let signatureResult={ status: WEB_CRYPTO_AVAILABLE ? 'missing' : 'unchecked' };
+          try {
+            signatureResult = await verifyDocSignature(docOriginal);
+            if (signatureResult && signatureResult.status && signatureResult.status !== 'valid') {
+              console.warn('[CSFX][Signature][Folder]', entry.name, signatureResult);
+              if (WEB_CRYPTO_AVAILABLE && requestServerSignature) {
+                try {
+                  const refreshed = await requestServerSignature(JSON.parse(JSON.stringify(docOriginal)));
+                  if (refreshed && refreshed.doc && refreshed.signature) {
+                    docOriginal = refreshed.doc;
+                    signatureResult = { status: 'valid', source: 'server' };
+                    try {
+                      const writable = await entry.createWritable();
+                      await writable.write(JSON.stringify(docOriginal, null, 2));
+                      await writable.close();
+                    } catch (err) {
+                      console.warn('[CSFX][Folder] no se pudo actualizar archivo firmado', entry.name, err);
+                    }
                   }
+                } catch (err) {
+                  console.warn('[CSFX][Signature][Folder] no se pudo regenerar', entry.name, err);
                 }
-              } catch (err) {
-                console.warn('[CSFX][Signature][Folder] no se pudo regenerar', entry.name, err);
               }
             }
+          } catch (err) {
+            console.warn('[CSFX][Verify] No se pudo validar firma', entry.name, err);
           }
-        } catch (err) {
-          console.warn('[CSFX][Verify] No se pudo validar firma', entry.name, err);
-        }
-        const docForUi = JSON.parse(JSON.stringify(docOriginal));
-        const fallbackFileName = (docOriginal && typeof docOriginal === 'object' && docOriginal.fileName) ? docOriginal.fileName : entry.name;
-        try{
-          const order = normalizeOrder(docForUi, signatureResult);
-          if (!order.fileName) order.fileName = fallbackFileName;
-          if (!order.pendingFileName) order.pendingFileName = fallbackFileName;
-          order.doc = docOriginal;
-          order.sourceDoc = docOriginal;
-          orders.push(order);
+          const fallbackFileName = (docOriginal && typeof docOriginal === 'object' && docOriginal.fileName) ? docOriginal.fileName : entry.name;
+          try{
+            const order = normalizeOrder(docOriginal, signatureResult);
+            if (!order.fileName) order.fileName = fallbackFileName;
+            if (!order.pendingFileName) order.pendingFileName = fallbackFileName;
+            order.doc = docOriginal;
+            order.sourceDoc = docOriginal;
+            loadedOrders.push(order);
+          }catch(err){
+            console.warn('No se pudo normalizar archivo', entry.name, err);
+          }
         }catch(err){
-          console.warn('No se pudo normalizar archivo', entry.name, err);
+          console.warn('No se pudo leer archivo', entry.name, err);
         }
-      }
+      };
+
+      const workerTotal = Math.min(maxWorkers, Math.max(entries.length, 1));
+      const workers = Array.from({length: workerTotal}, () => (async function run(){
+        while (true){
+          const entry = getNextEntry();
+          if (!entry) break;
+          await processEntry(entry);
+        }
+      })());
+      await Promise.all(workers);
+
+      loadedOrders.sort((a, b) => {
+        const aKey = (a.createdAtISO || a.createdAt || '') + (a.orderNumber || '');
+        const bKey = (b.createdAtISO || b.createdAt || '') + (b.orderNumber || '');
+        return aKey.localeCompare(bKey);
+      });
+
+      orders = loadedOrders;
       buildSummary();
       renderGroups();
+      $('#info').textContent = 'Carpeta: ' + folderLabel;
     }catch(e){
       console.warn(e); folder=null;
       $('#info').textContent = 'Sin carpeta';

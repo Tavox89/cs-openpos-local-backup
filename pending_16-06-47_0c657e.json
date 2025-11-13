@@ -1,0 +1,165 @@
+{
+  "key": "csfx_1762805207690_58ec2c",
+  "status": "pending",
+  "action": "offline-idb",
+  "deviceId": "ebd497cb-1f44-481f-a3d7-7fdefdd4af6e",
+  "ref": "CSFX-ebd497cb-1f44-481f-a3d7-7fdefdd4af6e-20251110-160647-pending",
+  "dayFolder": "2025-11-10",
+  "createdAt": 1762805207690,
+  "createdAtText": "2025-11-10T20:06:47.690Z",
+  "createdAtParts": {
+    "y": 2025,
+    "m": "11",
+    "d": "10",
+    "H": "16",
+    "M": "06",
+    "S": "47"
+  },
+  "cartHash": "lid:1762804558703",
+  "cart": {
+    "items": [
+      {
+        "id": 1762805190721,
+        "sku": "00000000208",
+        "name": "Alpina – Crema dental 90g",
+        "qty": 1,
+        "price": 3.54,
+        "total": 3.54,
+        "discount": 0
+      },
+      {
+        "id": 1762805191345,
+        "sku": "00000000125",
+        "name": "Fusión – Desodorante 150ml",
+        "qty": 1,
+        "price": 29,
+        "total": 29,
+        "discount": 0
+      },
+      {
+        "id": 1762805192199,
+        "sku": "00000000210",
+        "name": "Gran Reserva – Café molido 500g",
+        "qty": 1,
+        "price": 9,
+        "total": 9,
+        "discount": 0
+      }
+    ],
+    "cashier": "clubsams",
+    "salesperson": "clubsams",
+    "register": {
+      "name": "Tavox"
+    }
+  },
+  "payments": null,
+  "transactions": null,
+  "customer": {
+    "id": "3",
+    "avatar": "https://secure.gravatar.com/avatar/01a8a7b96ea92329e8ff919ac5b5f5318e9fa55d34dc6db722b824cea1a148bc?s=96&d=mm&r=g",
+    "name": "tavox pruebas",
+    "firstname": "tavox",
+    "lastname": "pruebas",
+    "address": "",
+    "address_2": "",
+    "state": "VE-G",
+    "city": "",
+    "country": "VE",
+    "postcode": "",
+    "phone": "04121282476",
+    "email": "tavox1998@gmail.com",
+    "billing_address": {
+      "first_name": "tavox",
+      "last_name": "pruebas",
+      "company": "",
+      "address_1": "",
+      "address_2": "",
+      "city": "",
+      "postcode": "",
+      "country": "VE",
+      "state": "VE-G",
+      "email": "tavox1998@gmail.com",
+      "phone": "04121282476"
+    },
+    "point": 0,
+    "discount": 0,
+    "badge": "",
+    "summary_html": "",
+    "auto_add": "no",
+    "shipping_address": [
+      {
+        "id": 2,
+        "title": "Facturación:",
+        "name": "tavox pruebas",
+        "address": "",
+        "address_2": "",
+        "state": "VE-G",
+        "postcode": "",
+        "city": "",
+        "country": "VE",
+        "phone": "04121282476"
+      },
+      {
+        "id": 1,
+        "title": "Envío:",
+        "name": "tavox pruebas",
+        "address": "",
+        "address_2": "",
+        "state": "VE-G",
+        "postcode": "",
+        "city": "",
+        "country": "VE",
+        "phone": "04121282476"
+      }
+    ],
+    "cedula_rif_tipo": "V",
+    "cedula_rif_num": "18724544",
+    "cedula_rif": "V-18724544",
+    "cedula_rif_clean": "V18724544"
+  },
+  "totals": {
+    "sub_total": 41.54,
+    "grand_total": 41.54,
+    "total_paid": 41.54,
+    "remain_paid": 41.54,
+    "discount_amount": 0,
+    "currency": {
+      "sub_total": "41,54",
+      "tax_amount": "0,00",
+      "discount_amount": "0,00",
+      "grand_total": "41,54",
+      "total_paid": "41,54",
+      "remain_paid": "41,54"
+    }
+  },
+  "cashier": "clubsams",
+  "registerName": "Tavox",
+  "rawRequest": {
+    "url": "idb:orders",
+    "method": "IDB",
+    "action": "offline-idb",
+    "restful": false,
+    "thin": true
+  },
+  "rawResponse": null,
+  "orderNumber": 781,
+  "orderId": 781,
+  "orderLocalId": 1762804558703,
+  "pendingFileName": "pending_16-06-47_0c657e.json",
+  "fileName": "pending_16-06-47_0c657e.json",
+  "version": "1.2.0",
+  "orderData": null,
+  "eventName": null,
+  "eventDetail": null,
+  "eventAmount": null,
+  "eventSession": null,
+  "deviceRef": "ebd497cb-1f44-481f-a3d7-7fdefdd4af6e",
+  "lastAction": "offline-idb",
+  "updatedAt": 1762805209683,
+  "updatedAtText": "2025-11-10T20:06:49.683Z",
+  "signature": {
+    "value": "d8a70ead1e01652d378dd6c56c9adcdde627ee9a195053a40e1604dbfe9f222b",
+    "alg": "HS256",
+    "ts": 1762805222203
+  }
+}
